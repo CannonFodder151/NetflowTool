@@ -6,11 +6,11 @@ WORKDIR /build
 RUN apk add --no-cache nodejs npm
 
 # Build frontend
-COPY frontend/package.json ./frontend/
+COPY frontend/package.json /build/frontend/
 WORKDIR /build/frontend
 RUN npm install
 
-COPY frontend/ ./frontend/
+COPY frontend/ /build/frontend/
 RUN npm run build
 
 # Build backend
