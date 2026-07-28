@@ -48,7 +48,7 @@ export default function Dashboard() {
               <thead><tr><th>IP</th><th style={{textAlign:'right'}}>Bytes</th></tr></thead>
               <tbody>
                 {data.top_talkers.map((t, i) => (
-                  <tr key={i}><td className="txt-sm">{t.ip}</td><td style={{textAlign:'right'}}>{formatBytes(t.bytes)}</td></tr>
+                  <tr key={i}><td className="text-sm">{t.ip}</td><td style={{textAlign:'right'}}>{formatBytes(t.bytes)}</td></tr>
                 ))}
               </tbody>
             </table>
