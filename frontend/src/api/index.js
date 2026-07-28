@@ -1,4 +1,4 @@
-const BASE = '/api'
+const BASE = ''
 
 function headers() {
   const h = { 'Content-Type': 'application/json' }
