@@ -1,9 +1,10 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: auto; }
 body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #f8fafc; color: #1e293b; }
 
 /* Layout */
 .app-layout { display: flex; flex-direction: column; min-height: 100vh; }
-.main-content { flex: 1; padding: 1.5rem; max-width: 1600px; margin: 0 auto; width: 100%; }
+.main-content { flex: 1; padding: 2rem; max-width: 1600px; margin: 0 auto; width: 100%; overflow: auto; }
 
 /* Navbar */
 .navbar { background: #1e3a5f; color: white; padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -53,7 +54,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; back
 /* Dashboard grid */
 .dashboard-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1rem; }
 .tile { border-radius: 12px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; min-height: 200px; display: flex; flex-direction: column; overflow: hidden; }
-.tile-header { padding: 0.75rem 1rem; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; cursor: grab; background: #f8fafc; }
+.tile-header { padding: 0.75rem 1rem; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; cursor: grab; background: #f8fafc; flex-shrink: 0; }
 .tile-title { font-weight: 600; font-size: 0.875rem; }
 .tile-content { flex: 1; padding: 1rem; overflow: auto; }
 
