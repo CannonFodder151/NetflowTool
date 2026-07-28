@@ -510,7 +510,7 @@ func pollDevice(db *DB, d SNMPDevice) {
 		"1.3.6.1.2.1.1.5.0",   // sysName
 		"1.3.6.1.2.1.2.1.0",   // ifNumber
 	}
-	results, err := sn.Get(oids)
+	_, err = sn.Get(oids)
 	if err != nil {
 		return
 	}
