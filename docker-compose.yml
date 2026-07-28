@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  netflow-collector:
+    build: .
+    container_name: netflow-collector
+    ports:
+      - "8080:8080"
+      - "514:514"
+      - "514:514/udp"
+      - "2055:2055/udp"
+    volumes:
+      - netflow_data:/data
+    environment:
+      - DB_PATH=/data/netflow.db
+      - ADMIN_PASSWORD=admin
+    restart: unless-stopped
+
+volumes:
+  netflow_data:

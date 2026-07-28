@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Netflow Monitor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.0/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <nav class="sticky top-0 bg-blue-900 text-white p-4 flex items-center justify-between w-full max-w-7xl mx-auto mb-8">
+            <div class="flex items-center">
+                <div class="text-2xl font-bold mr-4">Netflow Monitor</div>
+                <div class="flex items-center">
+                    <div class="p-2 rounded-md bg-blue-900 hover:bg-blue-800">
+                        <div class="font-semibold text-sm">admin</div>
+                        <button class="ml-4 text-blue-400 hover:text-blue-600">Logout</button>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="flex-grow overflow-hidden pb-32">
+            <div class="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+                <!-- Dashboard Tiles -->
+                <div class="bg-white rounded shadow p-4 m-2 w-64 h-48 flex flex-col items-start justify-normal">
+                    <div class="flex items-center lg:w-auto">
+                        <div class="flex-grow text-lg font-medium text-blue-800 truncated">Top Talkers</div>
+                    </div>
+                    <div class="bg-blue-600 text-white text-center py-3">Data will appear here</div>
+                </div>
+                <div class="bg-white rounded shadow p-4 m-2 w-64 h-48 flex flex-col items-start justify-normal">
+                    <div class="flex items-center lg:w-auto">
+                        <div class="flex-grow text-lg font-medium text-blue-800 truncated">Top Services</div>
+                    </div>
+                    <div class="bg-blue-600 text-white text-center py-3">Data will appear here</div>
+                </div>
+                <div class="bg-white rounded shadow p-4 m-2 w-64 h-48 flex flex-col items-start justify-normal">
+                    <div class="flex items-center lg:w-auto">
+                        <div class="flex-grow text-lg font-medium text-blue-800 truncated">Traffic Summary</div>
+                    </div>
+                    <div class="bg-blue-600 text-white text-center py-3">Data will appear here</div>
+                </div>
+                <div class="bg-white rounded shadow p-4 m-2 w-64 h-48 flex flex-col items-start justify-normal">
+                    <div class="flex items-center lg:w-auto">
+                        <div class="flex-grow text-lg font-medium text-blue-800 truncated">Interface Stats</div>
+                    </div>
+                    <div class="bg-blue-600 text-white text-center py-3">Data will appear here</div>
+                </div>
+                <div class="bg-white rounded shadow p-4 m-2 w-64 h-48 flex flex-col items-start justify-normal">
+                    <div class="flex items-center lg:w-auto">
+                        <div class="flex-grow text-lg font-medium text-blue-800 truncated">Change Log</div>
+                    </div>
+                    <div class="bg-blue-600 text-white text-center py-3">Data will appear here</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

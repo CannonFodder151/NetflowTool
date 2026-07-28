@@ -1,0 +1,26 @@
+# Dependencies
+backend/go.sum
+frontend/node_modules/
+frontend/package-lock.json
+
+# Build outputs
+frontend/dist/
+backend/netflow-collector
+
+# SQLite databases
+*.db
+!docker-compose.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+!docker-compose.yml
