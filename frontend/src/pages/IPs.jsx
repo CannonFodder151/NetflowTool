@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react'
+﻿import React, { useState, useEffect } from 'react'
 import { get, formatBytes } from '../api'
-import { Tile } from '../components/Tile'
+import Tile from '../components/Tile'
 import { format } from 'date-fns'
 
 export default function IPs() {

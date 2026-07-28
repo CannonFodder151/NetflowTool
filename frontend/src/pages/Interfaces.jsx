@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react'
+﻿import React, { useState, useEffect } from 'react'
 import { get, formatBytes, timeAgo } from '../api'
-import { Tile } from '../components/Tile'
+import Tile from '../components/Tile'
 import Table from '../components/Table'
 
 export default function Interfaces() {

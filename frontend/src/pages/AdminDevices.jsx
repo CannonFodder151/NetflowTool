@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react'
+﻿import React, { useState, useEffect } from 'react'
 import { get, post, del } from '../api'
-import { Tile } from '../components/Tile'
+import Tile from '../components/Tile'
 
 export default function AdminDevices() {
   const [devices, setDevices] = useState([])

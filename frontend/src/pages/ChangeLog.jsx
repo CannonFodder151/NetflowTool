@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react'
+﻿import React, { useState, useEffect } from 'react'
 import { get, timeAgo } from '../api'
-import { Tile } from '../components/Tile'
+import Tile from '../components/Tile'
 
 export default function ChangeLog() {
   const [logs, setLogs] = useState([])
