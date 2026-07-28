@@ -6,7 +6,7 @@ const AuthContext = createContext()
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null)
   const [mustReset, setMustReset] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [initialized, setInitialized] = useState(false)
 
   useEffect(() => {
     const token = localStorage.getItem('token')
@@ -15,31 +15,28 @@ export const AuthProvider = ({ children }) => {
         if (res.ok) {
           res.json().then(data => {
             setUser({ ...data, isAdmin: data.is_admin })
-            setLoading(false)
+            setInitialized(true)
           })
         } else {
-          setLoading(false)
+          localStorage.removeItem('token')
+          setInitialized(true)
         }
-      }).catch(() => setLoading(false))
+      }).catch(() => {
+        setInitialized(true)
+      })
     } else {
-      setLoading(false)
+      setInitialized(true)
     }
   }, [])
 
   const login = async (username, password) => {
-    setLoading(true)
-    try {
-      const res = await post('/api/login', { username, password })
-      if (!res.ok) throw new Error('Login failed')
-      const data = await res.json()
-      localStorage.setItem('token', data.token)
-      setUser({ ...data.user, isAdmin: data.user.is_admin })
-      setMustReset(data.must_reset_password)
-    } catch (err) {
-      throw err
-    } finally {
-      setLoading(false)
-    }
+    const res = await post('/api/login', { username, password })
+    if (!res.ok) throw new Error('Login failed')
+    const data = await res.json()
+    localStorage.setItem('token', data.token)
+    setUser({ ...data.user, isAdmin: data.user.is_admin })
+    setMustReset(data.must_reset_password)
+    return true
   }
 
   const logout = () => {
@@ -51,16 +48,17 @@ export const AuthProvider = ({ children }) => {
   const changePassword = async (oldPass, newPass) => {
     const res = await post('/api/change-password', { old_password: oldPass, new_password: newPass })
     if (!res.ok) throw new Error('Failed to change password')
-    // Force logout and relogin with new password
-    await logout()
-    await login(user.username, newPass)
+    logout()
+    localStorage.setItem('token', user.token)
+    setUser(user)
+    setMustReset(false)
   }
 
   const resetPassword = async () => {
     setMustReset(false)
   }
 
-  if (loading) {
+  if (!initialized) {
     return <div className="flex h-screen items-center justify-center bg-gray-50">
       <div className="text-center">
         <div className="inline-block animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div>
@@ -70,7 +68,7 @@ export const AuthProvider = ({ children }) => {
   }
 
   return (
-    <AuthContext.Provider value={{user,mustReset,loading,login,logout,changePassword,resetPassword}}>
+    <AuthContext.Provider value={{user,mustReset,initialized,login,logout,changePassword,resetPassword}}>
       {children}
     </AuthContext.Provider>
   )

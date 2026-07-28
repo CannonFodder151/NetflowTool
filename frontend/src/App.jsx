@@ -14,16 +14,16 @@ import Navbar from './components/Navbar'
 import './index.css'
 
 function PrivateRoute({ children, adminOnly = false }) {
-  const { user, loading } = useAuth()
-  if (loading) return <div className="flex h-screen items-center justify-center"><div className="animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div></div>
+  const { user, initialized } = useAuth()
+  if (!initialized) return <div className="flex h-screen items-center justify-center"><div className="animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div></div>
   if (!user) return <Navigate to="/login" replace />
   if (adminOnly && !user.is_admin) return <Navigate to="/" replace />
   return children
 }
 
 function PublicRoute({ children }) {
-  const { user, loading } = useAuth()
-  if (loading) return <div className="flex h-screen items-center justify-center"><div className="animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div></div>
+  const { user, initialized } = useAuth()
+  if (!initialized) return <div className="flex h-screen items-center justify-center"><div className="animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div></div>
   if (user) return <Navigate to="/" replace />
   return children
 }
