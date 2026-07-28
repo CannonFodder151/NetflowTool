@@ -26,7 +26,7 @@ RUN apk --no-cache add ca-certificates sqlite-libs
 
 WORKDIR /app
 COPY --from=builder /build/netflow-collector .
-COPY --from=builder /build/frontend/dist ./public
+COPY --from=builder /build/backend/public ./public
 
 EXPOSE 8080 514 2055
 
