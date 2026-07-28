@@ -10,6 +10,7 @@ import ChangeLog from './pages/ChangeLog'
 import AdminUsers from './pages/AdminUsers'
 import AdminDevices from './pages/AdminDevices'
 import PasswordReset from './pages/PasswordReset'
+import TopSources from './pages/TopSources'
 import Navbar from './components/Navbar'
 import './index.css'
 
@@ -38,6 +39,7 @@ function AppRoutes() {
         <Route path="/interfaces" element={<Interfaces />} />
         <Route path="/ips" element={<IPs />} />
         <Route path="/services" element={<Services />} />
+        <Route path="/top-sources" element={<TopSources />} />
         <Route path="/changelog" element={<ChangeLog />} />
         <Route path="/admin/users" element={<PrivateRoute adminOnly><AdminUsers /></PrivateRoute>} />
         <Route path="/admin/devices" element={<PrivateRoute adminOnly><AdminDevices /></PrivateRoute>} />

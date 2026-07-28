@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -1259,6 +1260,7 @@ func handleDashboardStats(db *DB) http.HandlerFunc {
 		jsonResp(w, map[string]interface{}{
 			"top_talkers":          topTalkers,
 			"top_services":         topServices,
+			"top_sources":          topTalkers,
 			"total_traffic":        total,
 			"traffic_day":          day,
 			"traffic_week":         week,
@@ -1310,6 +1312,28 @@ func makeRouter(db *DB) http.Handler {
 	mux.HandleFunc("/api/flows/total-traffic", handleGetTotalTraffic(db))
 	mux.HandleFunc("/api/flows/by-ip/", handleGetFlowsByIP(db))
 	mux.HandleFunc("/api/flows/by-service/", handleGetFlowsByService(db))
+	mux.HandleFunc("/api/flows/top-sources", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		rng := r.URL.Query().Get("range")
+		if rng == "" {
+			rng = "1h"
+		}
+		limit := 10
+		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
+			limit = l
+		}
+		q := fmt.Sprintf(`SELECT src_ip, COUNT(*) as hits, SUM(bytes) as total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY hits DESC LIMIT %d`, rng, limit)
+		rows, _ := db.Query(q)
+		defer rows.Close()
+		var res []map[string]interface{}
+		for rows.Next() {
+			var ip string
+			var hits int
+			var b uint64
+			rows.Scan(&ip, &hits, &b)
+			res = append(res, map[string]interface{}{"ip": ip, "hits": hits, "bytes": b})
+		}
+		jsonResp(w, res)
+	}))
 
 	// Interfaces
 	mux.HandleFunc("/api/interfaces", handleGetInterfaces(db))
@@ -1354,11 +1378,83 @@ func makeRouter(db *DB) http.Handler {
 	})
 	mux.HandleFunc("/api/dashboard/stats", handleDashboardStats(db))
 
-	// Static files
+	// Static files with SPA fallback
 	fs := http.FileServer(http.Dir("public"))
-	mux.Handle("/", fs)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// API routes handled above, everything else SPA
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		// Try serving the file, fallback to index.html
+		path := "public" + r.URL.Path
+		if _, err := os.Stat(path); err == nil {
+			fs.ServeHTTP(w, r)
+		} else {
+			http.ServeFile(w, r, "public/index.html")
+		}
+	})
 
 	return mux
+}
+
+// ─── DEMO DATA ──────────────────────────────────────────────────────────────
+
+func seedDemoData(db *DB) {
+	var cnt int
+	db.QueryRow("SELECT COUNT(*) FROM flow_records").Scan(&cnt)
+	if cnt > 0 {
+		return // already has data
+	}
+
+	log.Println("Seeding demo data...")
+	now := time.Now()
+	ips := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5",
+		"172.16.1.1", "172.16.1.2", "192.168.1.1", "192.168.1.100", "192.168.1.200",
+		"8.8.8.8", "1.1.1.1", "142.250.80.46", "151.101.1.140", "104.16.132.229"}
+	ports := []uint16{80, 443, 22, 53, 3389, 8080, 8443, 3306, 5432, 25, 993, 443, 80, 443, 8080}
+
+	tx, _ := db.Begin()
+	defer tx.Rollback()
+	stmt, _ := tx.Prepare("INSERT INTO flow_records (src_ip,dst_ip,src_port,dst_port,protocol,bytes,packets,first_switched,last_switched,collected_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+
+	for i := 0; i < 500; i++ {
+		src := ips[rand.Intn(len(ips))]
+		dst := ips[rand.Intn(len(ips))]
+		if src == dst {
+			dst = ips[(rand.Intn(len(ips))+1)%len(ips)]
+		}
+		sport := ports[rand.Intn(len(ports))]
+		dport := ports[rand.Intn(len(ports))]
+		proto := uint8(6) // TCP
+		if dport == 53 || sport == 53 {
+			proto = 17 // UDP
+		}
+		bytes := uint64(rand.Intn(1000000) + 100)
+		pkts := uint32(bytes/64 + 1)
+		ts := now.Add(-time.Duration(rand.Intn(3600)) * time.Second)
+		stmt.Exec(src, dst, sport, dport, proto, bytes, pkts, ts.Format("2006-01-02 15:04:05"), ts.Format("2006-01-02 15:04:05"), ts.Format("2006-01-02 15:04:05"))
+	}
+	tx.Commit()
+
+	// Seed some demo logs
+	logTypes := []string{"traffic", "event", "system", "threat", "vpn"}
+	actions := []string{"allow", "deny", "drop", "close", "open"}
+	risks := []string{"low", "low", "low", "medium", "high", "critical"}
+	for i := 0; i < 50; i++ {
+		lt := logTypes[rand.Intn(len(logTypes))]
+		action := actions[rand.Intn(len(actions))]
+		risk := risks[rand.Intn(len(risks))]
+		ts := now.Add(-time.Duration(rand.Intn(3600)) * time.Second)
+		db.Exec(`INSERT INTO fortigate_logs (ts,device_name,device_ip,log_type,action,message,src_ip,dst_ip,service,risk_level,raw_log)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			ts.Format("2006-01-02 15:04:05"), "FG-100E", "192.168.1.1", lt, action,
+			fmt.Sprintf("Demo %s event from %s %s", lt, ips[rand.Intn(len(ips))], ips[rand.Intn(len(ips))]),
+			ips[rand.Intn(len(ips))], ips[rand.Intn(len(ips))], fmt.Sprintf("Port-%d", ports[rand.Intn(len(ports))]),
+			risk, "demo log entry")
+	}
+
+	log.Printf("Seeded %d flow records and %d fortigate logs", 500, 50)
 }
 
 // ─── MAIN ────────────────────────────────────────────────────────────────────
@@ -1381,6 +1477,9 @@ func main() {
 	go startSNMPPoller(db)
 	time.Sleep(100 * time.Millisecond)
 	go startSyslog(db, 514)
+
+	// Seed demo data if needed
+	seedDemoData(db)
 
 	// Start API
 	router := makeRouter(db)

@@ -7,6 +7,7 @@ const navItems = [
   { path: '/interfaces', label: 'Interfaces' },
   { path: '/ips', label: 'IPs' },
   { path: '/services', label: 'Services' },
+  { path: '/top-sources', label: 'Top Sources' },
   { path: '/changelog', label: 'Change Log' },
 ]
 
