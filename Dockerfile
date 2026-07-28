@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /build
 
@@ -17,7 +17,7 @@ RUN npm run build
 WORKDIR /build
 COPY backend/ ./backend/
 WORKDIR /build/backend
-RUN go mod tidy
+RUN go mod download
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/netflow-collector .
 
 FROM alpine:latest
