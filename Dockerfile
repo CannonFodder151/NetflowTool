@@ -3,7 +3,7 @@ FROM golang:1.22-alpine AS builder
 WORKDIR /build
 
 # Install Node.js for frontend build
-RUN apk add --no-cache nodejs npm
+RUN apk add --no-cache nodejs npm build-base
 
 # Build frontend
 COPY frontend/package.json /build/frontend/
