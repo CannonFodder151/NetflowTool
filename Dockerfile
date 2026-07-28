@@ -15,12 +15,10 @@ RUN npm run build
 
 # Build backend
 WORKDIR /build
-COPY backend/go.mod ./backend/
-RUN cd backend && go mod download
-
 COPY backend/ ./backend/
 WORKDIR /build/backend
-RUN     CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/netflow-collector .
+RUN go mod tidy
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/netflow-collector .
 
 FROM alpine:latest
 
