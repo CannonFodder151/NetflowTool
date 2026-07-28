@@ -18,7 +18,7 @@ function PrivateRoute({ children, adminOnly = false }) {
   if (!initialized) return <div className="flex h-screen items-center justify-center"><div className="animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div></div>
   if (!user) return <Navigate to="/login" replace />
   if (adminOnly && !user.is_admin) return <Navigate to="/" replace />
-  return children
+  return <>{children}</>
 }
 
 function PublicRoute({ children }) {
@@ -47,11 +47,11 @@ function AppRoutes() {
   )
 }
 
-function AppLayout({ children }) {
+function AppLayout() {
   return (
     <div className="app-layout">
       <Navbar />
-      <main className="main-content">{children}</main>
+      <main className="main-content"><Outlet /></main>
     </div>
   )
 }
