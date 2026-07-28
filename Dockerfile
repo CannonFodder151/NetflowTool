@@ -17,7 +17,7 @@ RUN npm run build
 WORKDIR /build
 COPY backend/ ./backend/
 WORKDIR /build/backend
-RUN go mod download
+RUN GOTOOLCHAIN=auto go mod tidy
 RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /build/netflow-collector .
 
 FROM alpine:latest
