@@ -91,6 +91,7 @@ type IfaceView struct {
 	DeviceIP      string `json:"device_ip"`
 	Idx           int    `json:"idx"`
 	Name          string `json:"name"`
+	Description   string `json:"description"`
 	Speed         uint64 `json:"speed"`
 	AdminStatus   int    `json:"admin_status"`
 	OperStatus    int    `json:"oper_status"`
@@ -512,13 +513,6 @@ func pollDevice(db *DB, d SNMPDevice) {
 	results, err := sn.Get(oids)
 	if err != nil {
 		return
-	}
-
-	var ifNumber int
-	if len(results.Variables) > 2 {
-		if v, ok := results.Variables[2].Value.(int); ok {
-			ifNumber = v
-		}
 	}
 
 	// Walk ifTable
