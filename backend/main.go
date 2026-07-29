@@ -69,22 +69,6 @@ type SNMPDevice struct {
 	LastPoll      *time.Time `json:"last_poll"`
 }
 
-type Iface struct {
-	ID          int64     `json:"id"`
-	DeviceID    int64     `json:"device_id"`
-	Idx         int       `json:"idx"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Speed       uint64    `json:"speed"`
-	AdminStatus int       `json:"admin_status"`
-	OperStatus  int       `json:"oper_status"`
-	InOctets    uint64    `json:"in_octets"`
-	OutOctets   uint64    `json:"out_octets"`
-	InErrors    uint64    `json:"in_errors"`
-	OutErrors   uint64    `json:"out_errors"`
-	LastUpdated time.Time `json:"last_updated"`
-}
-
 type IfaceView struct {
 	ID            int64  `json:"id"`
 	DeviceID      int64  `json:"device_id"`
@@ -235,7 +219,13 @@ func (d *DB) migrate() error {
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
-var jwtSecret = []byte("netflow-secret-change-in-prod")
+var jwtSecret = func() []byte {
+	s := os.Getenv("JWT_SECRET")
+	if s == "" {
+		s = "netflow-secret-change-in-prod"
+	}
+	return []byte(s)
+}()
 
 type Claims struct {
 	UserID   int64  `json:"uid"`
@@ -338,6 +328,19 @@ func categorizePort(port uint16) string {
 		return s
 	}
 	return fmt.Sprintf("Port-%d", port)
+}
+
+// validateTimeRange ensures only safe SQLite time expressions are used
+var validRanges = map[string]bool{
+	"1h": true, "2h": true, "6h": true, "12h": true, "24h": true,
+	"7d": true, "14d": true, "30d": true, "90d": true,
+}
+
+func safeTimeRange(rng string) string {
+	if validRanges[rng] {
+		return rng
+	}
+	return "1h"
 }
 
 // ─── NETFLOW COLLECTOR ───────────────────────────────────────────────────────
@@ -768,11 +771,6 @@ func jsonErr(w http.ResponseWriter, msg string, code int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-func jsonBytes(w http.ResponseWriter, data []byte) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
-}
-
 func handleLogin(db *DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var creds struct {
@@ -914,10 +912,7 @@ func handleResetPassword(db *DB) http.HandlerFunc {
 
 func handleGetTopTalkers(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		rng := r.URL.Query().Get("range")
-		if rng == "" {
-			rng = "1h"
-		}
+		rng := safeTimeRange(r.URL.Query().Get("range"))
 		limit := 10
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
@@ -938,10 +933,7 @@ func handleGetTopTalkers(db *DB) http.HandlerFunc {
 
 func handleGetTopServices(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		rng := r.URL.Query().Get("range")
-		if rng == "" {
-			rng = "1h"
-		}
+		rng := safeTimeRange(r.URL.Query().Get("range"))
 		limit := 10
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
@@ -962,10 +954,7 @@ func handleGetTopServices(db *DB) http.HandlerFunc {
 
 func handleGetTrafficSummary(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		rng := r.URL.Query().Get("range")
-		if rng == "" {
-			rng = "1h"
-		}
+		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
 		var cnt uint64
 		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0), COUNT(*) FROM flow_records WHERE collected_at > datetime('now','-%s')", rng)).Scan(&total, &cnt)
@@ -986,10 +975,7 @@ func handleGetTotalTraffic(db *DB) http.HandlerFunc {
 func handleGetFlowsByIP(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		ip := strings.TrimPrefix(r.URL.Path, "/api/flows/by-ip/")
-		rng := r.URL.Query().Get("range")
-		if rng == "" {
-			rng = "1h"
-		}
+		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
 		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_ip=? OR dst_ip=?) AND collected_at > datetime('now','-%s')", rng), ip, ip).Scan(&total)
 		jsonResp(w, map[string]interface{}{"ip": ip, "bytes": total})
@@ -1000,10 +986,7 @@ func handleGetFlowsByService(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		svc := strings.TrimPrefix(r.URL.Path, "/api/flows/by-service/")
 		port, _ := strconv.Atoi(svc)
-		rng := r.URL.Query().Get("range")
-		if rng == "" {
-			rng = "1h"
-		}
+		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
 		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_port=? OR dst_port=?) AND collected_at > datetime('now','-%s')", rng), port, port).Scan(&total)
 		jsonResp(w, map[string]interface{}{"service": svc, "bytes": total})
@@ -1313,10 +1296,7 @@ func makeRouter(db *DB) http.Handler {
 	mux.HandleFunc("/api/flows/by-ip/", handleGetFlowsByIP(db))
 	mux.HandleFunc("/api/flows/by-service/", handleGetFlowsByService(db))
 	mux.HandleFunc("/api/flows/top-sources", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		rng := r.URL.Query().Get("range")
-		if rng == "" {
-			rng = "1h"
-		}
+		rng := safeTimeRange(r.URL.Query().Get("range"))
 		limit := 10
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
@@ -1484,8 +1464,11 @@ func main() {
 	// Start API
 	router := makeRouter(db)
 	server := &http.Server{
-		Addr:    ":8080",
-		Handler: router,
+		Addr:         ":8080",
+		Handler:      router,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {
