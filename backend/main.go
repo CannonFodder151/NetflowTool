@@ -617,10 +617,25 @@ func processSyslog(data []byte, db *DB) {
 			log.Timestamp, log.DeviceName, log.DeviceIP, log.LogType, log.Action,
 			log.Message, log.SrcIP, log.DstIP, log.Service, log.RiskLevel, log.RawLog)
 		db.mu.Unlock()
+	} else {
+		log.Printf("syslog: unparsed message (first 200 chars): %s", msg[:min(200, len(msg))])
 	}
 }
 
+func min(a, b int) int {
+	if a < b { return a }
+	return b
+}
+
 func parseFLog(msg string) *FLog {
+	// Strip syslog PRI prefix like <189>
+	msg = strings.TrimLeft(msg, "<")
+	if idx := strings.IndexByte(msg, '>'); idx >= 0 && idx < 4 {
+		if _, err := strconv.Atoi(msg[:idx]); err == nil {
+			msg = msg[idx+1:]
+		}
+	}
+
 	fl := &FLog{
 		Timestamp: time.Now().UTC().Format("2006-01-02 15:04:05"),
 		RawLog:    msg,
@@ -1041,8 +1056,12 @@ func handleCreateDevice(db *DB) http.HandlerFunc {
 		if d.PollInterval == 0 {
 			d.PollInterval = 60
 		}
-		r2, err := db.Exec("INSERT INTO snmp_devices (name,ip,snmp_version,community,poll_interval,enabled) VALUES (?,?,?,?,?,1)",
-			d.Name, d.IP, d.SNMPVersion, d.Community, d.PollInterval)
+		if d.Community == "" {
+			d.Community = "public"
+		}
+		r2, err := db.Exec("INSERT INTO snmp_devices (name,ip,snmp_version,community,security_level,snmp_username,auth_proto,auth_pass,priv_proto,priv_pass,poll_interval,enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)",
+			d.Name, d.IP, d.SNMPVersion, d.Community, d.SecurityLevel, d.SnmpUsername,
+			d.AuthProto, d.AuthPass, d.PrivProto, d.PrivPass, d.PollInterval)
 		if err != nil {
 			jsonErr(w, err.Error(), http.StatusConflict)
 			return
@@ -1057,8 +1076,10 @@ func handleUpdateDevice(db *DB) http.HandlerFunc {
 		id := strings.TrimPrefix(r.URL.Path, "/api/devices/")
 		var d SNMPDevice
 		json.NewDecoder(r.Body).Decode(&d)
-		db.Exec("UPDATE snmp_devices SET name=?,ip=?,snmp_version=?,community=?,poll_interval=?,enabled=? WHERE id=?",
-			d.Name, d.IP, d.SNMPVersion, d.Community, d.PollInterval, d.Enabled, id)
+		db.Exec("UPDATE snmp_devices SET name=?,ip=?,snmp_version=?,community=?,security_level=?,snmp_username=?,auth_proto=?,auth_pass=?,priv_proto=?,priv_pass=?,poll_interval=?,enabled=? WHERE id=?",
+			d.Name, d.IP, d.SNMPVersion, d.Community, d.SecurityLevel, d.SnmpUsername,
+			d.AuthProto, d.AuthPass, d.PrivProto, d.PrivPass,
+			d.PollInterval, d.Enabled, id)
 		jsonResp(w, map[string]string{"ok": "updated"})
 	})
 }
@@ -1464,8 +1485,10 @@ func main() {
 	time.Sleep(100 * time.Millisecond)
 	go startSyslog(db, 514)
 
-	// Seed demo data if needed
-	seedDemoData(db)
+	// Seed demo data if explicitly enabled
+	if os.Getenv("DEMO_DATA") == "true" || os.Getenv("DEMO_DATA") == "1" {
+		seedDemoData(db)
+	}
 
 	// Start API
 	router := makeRouter(db)
