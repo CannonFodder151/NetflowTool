@@ -12,6 +12,7 @@ import AdminDevices from './pages/AdminDevices'
 import PasswordReset from './pages/PasswordReset'
 import TopSources from './pages/TopSources'
 import Navbar from './components/Navbar'
+import ErrorBoundary from './components/ErrorBoundary'
 import './index.css'
 
 function PrivateRoute({ children, adminOnly = false }) {
@@ -36,13 +37,13 @@ function AppRoutes() {
       <Route path="/reset-password" element={<PrivateRoute><PasswordReset /></PrivateRoute>} />
       <Route element={<PrivateRoute><AppLayout /></PrivateRoute>}>
         <Route path="/" element={<Dashboard />} />
-        <Route path="/interfaces" element={<Interfaces />} />
-        <Route path="/ips" element={<IPs />} />
-        <Route path="/services" element={<Services />} />
-        <Route path="/top-sources" element={<TopSources />} />
-        <Route path="/changelog" element={<ChangeLog />} />
-        <Route path="/admin/users" element={<PrivateRoute adminOnly><AdminUsers /></PrivateRoute>} />
-        <Route path="/admin/devices" element={<PrivateRoute adminOnly><AdminDevices /></PrivateRoute>} />
+        <Route path="/interfaces" element={<ErrorBoundary><Interfaces /></ErrorBoundary>} />
+        <Route path="/ips" element={<ErrorBoundary><IPs /></ErrorBoundary>} />
+        <Route path="/services" element={<ErrorBoundary><Services /></ErrorBoundary>} />
+        <Route path="/top-sources" element={<ErrorBoundary><TopSources /></ErrorBoundary>} />
+        <Route path="/changelog" element={<ErrorBoundary><ChangeLog /></ErrorBoundary>} />
+        <Route path="/admin/users" element={<PrivateRoute adminOnly><ErrorBoundary><AdminUsers /></ErrorBoundary></PrivateRoute>} />
+        <Route path="/admin/devices" element={<PrivateRoute adminOnly><ErrorBoundary><AdminDevices /></ErrorBoundary></PrivateRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
