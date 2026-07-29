@@ -966,9 +966,11 @@ func handleGetTrafficSummary(db *DB) http.HandlerFunc {
 func handleGetTotalTraffic(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		var day, week, month uint64
-		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE collected_at > datetime('now','-1 day')").Scan(&day)
-		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE collected_at > datetime('now','-7 days')").Scan(&week)
-		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE collected_at > datetime('now','-30 days')").Scan(&month)
+		db.QueryRow(`SELECT 
+			COALESCE(SUM(CASE WHEN collected_at > datetime('now','-1 day') THEN bytes ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN collected_at > datetime('now','-7 days') THEN bytes ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN collected_at > datetime('now','-30 days') THEN bytes ELSE 0 END), 0)
+			FROM flow_records`).Scan(&day, &week, &month)
 		jsonResp(w, map[string]uint64{"day": day, "week": week, "month": month})
 	})
 }
@@ -1184,62 +1186,65 @@ func handleSaveTiles(db *DB) http.HandlerFunc {
 
 func handleDashboardStats(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		// Gather everything for dashboard
 		var (
 			topTalkers, topServices, logs []map[string]interface{}
 			day, week, month, total       uint64
 			logStats                      map[string]int
 		)
 
-		// Top talkers
+		// Combined totals query - single pass
+		db.QueryRow(`SELECT 
+			COALESCE(SUM(CASE WHEN collected_at > datetime('now','-1 day') THEN bytes ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN collected_at > datetime('now','-7 days') THEN bytes ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN collected_at > datetime('now','-30 days') THEN bytes ELSE 0 END), 0),
+			COALESCE(SUM(bytes), 0) FROM flow_records`).Scan(&day, &week, &month, &total)
+
+		// Top talkers (1h)
 		r1, _ := db.Query("SELECT src_ip,SUM(bytes) AS b FROM flow_records WHERE collected_at > datetime('now','-1h') GROUP BY src_ip ORDER BY b DESC LIMIT 10")
-		for r1.Next() {
-			var ip string
-			var b uint64
-			r1.Scan(&ip, &b)
-			topTalkers = append(topTalkers, map[string]interface{}{"ip": ip, "bytes": b})
+		if r1 != nil {
+			for r1.Next() {
+				var ip string; var b uint64
+				r1.Scan(&ip, &b)
+				topTalkers = append(topTalkers, map[string]interface{}{"ip": ip, "bytes": b})
+			}
+			r1.Close()
 		}
-		r1.Close()
 
-		// Top services
+		// Top services (1h)
 		r2, _ := db.Query("SELECT dst_port,SUM(bytes) AS b FROM flow_records WHERE collected_at > datetime('now','-1h') AND dst_port>0 GROUP BY dst_port ORDER BY b DESC LIMIT 10")
-		for r2.Next() {
-			var p uint16
-			var b uint64
-			r2.Scan(&p, &b)
-			topServices = append(topServices, map[string]interface{}{"port": p, "service": categorizePort(p), "bytes": b})
+		if r2 != nil {
+			for r2.Next() {
+				var p uint16; var b uint64
+				r2.Scan(&p, &b)
+				topServices = append(topServices, map[string]interface{}{"port": p, "service": categorizePort(p), "bytes": b})
+			}
+			r2.Close()
 		}
-		r2.Close()
-
-		// Totals
-		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records").Scan(&total)
-		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE collected_at > datetime('now','-1 day')").Scan(&day)
-		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE collected_at > datetime('now','-7 days')").Scan(&week)
-		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE collected_at > datetime('now','-30 days')").Scan(&month)
 
 		// Log stats
 		r3, _ := db.Query("SELECT risk_level,COUNT(*) FROM fortigate_logs GROUP BY risk_level")
 		logStats = make(map[string]int)
-		for r3.Next() {
-			var l string
-			var c int
-			r3.Scan(&l, &c)
-			logStats[l] = c
+		if r3 != nil {
+			for r3.Next() {
+				var l string; var c int
+				r3.Scan(&l, &c)
+				logStats[l] = c
+			}
+			r3.Close()
 		}
-		r3.Close()
 
 		// Recent changes
 		r4, _ := db.Query("SELECT id,ts,device_name,action,message,risk_level FROM fortigate_logs WHERE risk_level IN ('high','critical') ORDER BY ts DESC LIMIT 20")
-		for r4.Next() {
-			var l FLog
-			r4.Scan(&l.ID, &l.Timestamp, &l.DeviceName, &l.Action, &l.Message, &l.RiskLevel)
-			logs = append(logs, map[string]interface{}{
-				"id": l.ID, "ts": l.Timestamp,
-				"device": l.DeviceName, "action": l.Action,
-				"message": l.Message, "risk": l.RiskLevel,
-			})
+		if r4 != nil {
+			for r4.Next() {
+				var l FLog
+				r4.Scan(&l.ID, &l.Timestamp, &l.DeviceName, &l.Action, &l.Message, &l.RiskLevel)
+				logs = append(logs, map[string]interface{}{
+					"id": l.ID, "ts": l.Timestamp, "device": l.DeviceName, "action": l.Action, "message": l.Message, "risk": l.RiskLevel,
+				})
+			}
+			r4.Close()
 		}
-		r4.Close()
 
 		jsonResp(w, map[string]interface{}{
 			"top_talkers":          topTalkers,
