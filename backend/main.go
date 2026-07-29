@@ -622,7 +622,7 @@ func processSyslog(data []byte, db *DB) {
 
 func parseFLog(msg string) *FLog {
 	fl := &FLog{
-		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		Timestamp: time.Now().UTC().Format("2006-01-02 15:04:05"),
 		RawLog:    msg,
 		RiskLevel: "low",
 	}
@@ -1394,7 +1394,7 @@ func seedDemoData(db *DB) {
 	}
 
 	log.Println("Seeding demo data...")
-	now := time.Now()
+	now := time.Now().UTC()
 	ips := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5",
 		"172.16.1.1", "172.16.1.2", "192.168.1.1", "192.168.1.100", "192.168.1.200",
 		"8.8.8.8", "1.1.1.1", "142.250.80.46", "151.101.1.140", "104.16.132.229"}
