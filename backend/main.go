@@ -88,18 +88,18 @@ type IfaceView struct {
 }
 
 type FLog struct {
-	ID         int64     `json:"id"`
-	Timestamp  time.Time `json:"timestamp"`
-	DeviceName string    `json:"device_name"`
-	DeviceIP   string    `json:"device_ip"`
-	LogType    string    `json:"log_type"`
-	Action     string    `json:"action"`
-	Message    string    `json:"message"`
-	SrcIP      string    `json:"src_ip"`
-	DstIP      string    `json:"dst_ip"`
-	Service    string    `json:"service"`
-	RiskLevel  string    `json:"risk_level"`
-	RawLog     string    `json:"raw_log"`
+	ID         int64  `json:"id"`
+	Timestamp  string `json:"timestamp"`
+	DeviceName string `json:"device_name"`
+	DeviceIP   string `json:"device_ip"`
+	LogType    string `json:"log_type"`
+	Action     string `json:"action"`
+	Message    string `json:"message"`
+	SrcIP      string `json:"src_ip"`
+	DstIP      string `json:"dst_ip"`
+	Service    string `json:"service"`
+	RiskLevel  string `json:"risk_level"`
+	RawLog     string `json:"raw_log"`
 }
 
 type Tile struct {
@@ -622,7 +622,7 @@ func processSyslog(data []byte, db *DB) {
 
 func parseFLog(msg string) *FLog {
 	fl := &FLog{
-		Timestamp: time.Now(),
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 		RawLog:    msg,
 		RiskLevel: "low",
 	}
@@ -630,10 +630,11 @@ func parseFLog(msg string) *FLog {
 	// Parse FortiGate log format: date=... time=... devname=... ... 
 	kv := parseKV(msg)
 	if t, ok := kv["date"]; ok {
-		fl.Timestamp, _ = time.Parse("2006-01-02", t)
-	}
-	if t, ok := kv["time"]; ok {
-		fl.Timestamp, _ = time.Parse("2006-01-02 15:04:05", kv["date"]+" "+t)
+		if tm, ok2 := kv["time"]; ok2 {
+			fl.Timestamp = t + " " + tm
+		} else {
+			fl.Timestamp = t
+		}
 	}
 	if v, ok := kv["devname"]; ok {
 		fl.DeviceName = v
@@ -1132,7 +1133,7 @@ func handleGetChangeLog(db *DB) http.HandlerFunc {
 			var l FLog
 			rows.Scan(&l.ID, &l.Timestamp, &l.DeviceName, &l.DeviceIP, &l.LogType, &l.Action, &l.Message, &l.RiskLevel)
 			res = append(res, map[string]interface{}{
-				"id": l.ID, "timestamp": l.Timestamp.Format(time.RFC3339),
+				"id": l.ID, "timestamp": l.Timestamp,
 				"device": l.DeviceName, "action": l.Action,
 				"message": l.Message, "risk": l.RiskLevel,
 			})
@@ -1233,7 +1234,7 @@ func handleDashboardStats(db *DB) http.HandlerFunc {
 			var l FLog
 			r4.Scan(&l.ID, &l.Timestamp, &l.DeviceName, &l.Action, &l.Message, &l.RiskLevel)
 			logs = append(logs, map[string]interface{}{
-				"id": l.ID, "ts": l.Timestamp.Format(time.RFC3339),
+				"id": l.ID, "ts": l.Timestamp,
 				"device": l.DeviceName, "action": l.Action,
 				"message": l.Message, "risk": l.RiskLevel,
 			})
