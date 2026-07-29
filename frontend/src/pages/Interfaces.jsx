@@ -8,7 +8,7 @@ export default function Interfaces() {
   const [filter, setFilter] = useState('')
 
   useEffect(() => {
-    get('/api/interfaces').then(r => r.ok && r.json().then(setIfaces)).finally(() => setLoading(false))
+    get('/api/interfaces').then(r => r.ok && r.json().then(data => setIfaces(Array.isArray(data) ? data : []))).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
   const filtered = ifaces.filter(i =>

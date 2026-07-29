@@ -920,7 +920,7 @@ func handleGetTopTalkers(db *DB) http.HandlerFunc {
 		q := fmt.Sprintf("SELECT src_ip, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY total DESC LIMIT %d", rng, limit)
 		rows, _ := db.Query(q)
 		defer rows.Close()
-		var res []map[string]interface{}
+		res := make([]map[string]interface{}, 0)
 		for rows.Next() {
 			var ip string
 			var b uint64
@@ -941,7 +941,7 @@ func handleGetTopServices(db *DB) http.HandlerFunc {
 		q := fmt.Sprintf("SELECT dst_port, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') AND dst_port > 0 GROUP BY dst_port ORDER BY total DESC LIMIT %d", rng, limit)
 		rows, _ := db.Query(q)
 		defer rows.Close()
-		var res []map[string]interface{}
+		res := make([]map[string]interface{}, 0)
 		for rows.Next() {
 			var port uint16
 			var b uint64
@@ -999,7 +999,7 @@ func handleGetInterfaces(db *DB) http.HandlerFunc {
 			i.in_octets,i.out_octets,i.in_errors,i.out_errors,i.last_updated,d.name,d.ip 
 			FROM interfaces i JOIN snmp_devices d ON i.device_id=d.id ORDER BY d.name,i.idx`)
 		defer rows.Close()
-		var res []IfaceView
+		res := make([]IfaceView, 0)
 		for rows.Next() {
 			v := IfaceView{}
 			var lu sql.NullString
@@ -1019,7 +1019,7 @@ func handleGetDevices(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		rows, _ := db.Query("SELECT id,name,ip,snmp_version,community,security_level,snmp_username,auth_proto,auth_pass,priv_proto,priv_pass,poll_interval,enabled,last_poll FROM snmp_devices")
 		defer rows.Close()
-		var res []SNMPDevice
+		res := make([]SNMPDevice, 0)
 		for rows.Next() {
 			d := SNMPDevice{}
 			rows.Scan(&d.ID, &d.Name, &d.IP, &d.SNMPVersion, &d.Community, &d.SecurityLevel,
@@ -1096,7 +1096,7 @@ func handleGetLogs(db *DB) http.HandlerFunc {
 
 		rows, _ := db.Query(q, args...)
 		defer rows.Close()
-		var res []FLog
+		res := make([]FLog, 0)
 		for rows.Next() {
 			var l FLog
 			rows.Scan(&l.ID, &l.Timestamp, &l.DeviceName, &l.DeviceIP, &l.LogType,
@@ -1127,7 +1127,7 @@ func handleGetChangeLog(db *DB) http.HandlerFunc {
 		rows, _ := db.Query(`SELECT id,ts,device_name,device_ip,log_type,action,message,risk_level 
 			FROM fortigate_logs WHERE risk_level IN ('high','critical') ORDER BY ts DESC LIMIT 100`)
 		defer rows.Close()
-		var res []map[string]interface{}
+		res := make([]map[string]interface{}, 0)
 		for rows.Next() {
 			var l FLog
 			rows.Scan(&l.ID, &l.Timestamp, &l.DeviceName, &l.DeviceIP, &l.LogType, &l.Action, &l.Message, &l.RiskLevel)
@@ -1304,7 +1304,7 @@ func makeRouter(db *DB) http.Handler {
 		q := fmt.Sprintf(`SELECT src_ip, COUNT(*) as hits, SUM(bytes) as total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY hits DESC LIMIT %d`, rng, limit)
 		rows, _ := db.Query(q)
 		defer rows.Close()
-		var res []map[string]interface{}
+		res := make([]map[string]interface{}, 0)
 		for rows.Next() {
 			var ip string
 			var hits int
