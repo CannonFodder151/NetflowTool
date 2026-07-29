@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect } from 'react'
-import { get, post, del } from '../api'
+import { get, post, put, del } from '../api'
 import Tile from '../components/Tile'
 import { format } from 'date-fns'
 
@@ -19,8 +19,8 @@ export default function AdminUsers() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     const url = editing ? `/api/users/${editing.id}` : '/api/users'
-    const method = editing ? 'PUT' : 'POST'
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+    const body = { username: form.username, password: form.password, is_admin: form.is_admin }
+    const res = editing ? await put(url, body) : await post(url, body)
     if (res.ok) { setShowModal(false); resetForm(); setEditing(null); get('/api/users').then(r => r.ok && r.json().then(setUsers)) }
   }
 

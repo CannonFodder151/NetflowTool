@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect } from 'react'
-import { get, post, del } from '../api'
+import { get, post, put, del } from '../api'
 import Tile from '../components/Tile'
 import { format } from 'date-fns'
 
@@ -42,11 +42,8 @@ export default function AdminDevices() {
     if (form.snmp_version !== 'v3') {
       body.security_level = body.snmp_username = body.auth_proto = body.auth_pass = body.priv_proto = body.priv_pass = ''
     }
-    const res = await fetch(editing ? `/api/devices/${editing.id}` : '/api/devices', {
-      method: editing ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
+    const url = editing ? `/api/devices/${editing.id}` : '/api/devices'
+    const res = editing ? await put(url, body) : await post(url, body)
     if (res.ok) { setShowModal(false); resetForm(); setEditing(null); get('/api/devices').then(r => r.ok && r.json().then(setDevices)) }
   }
 
