@@ -938,6 +938,9 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 				VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
 				d.ID, f.idx, f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr)
 		}
+		if f.idx == 19 || f.idx == 27 {
+			log.Printf("[SNMP] SAVE if%d (devID=%d exists=%d): name=%q speed=%d oper=%d inOct=%d err=%v", f.idx, d.ID, exists, f.name, f.speed, f.oper, f.inOct, err)
+		}
 		if err != nil {
 			savedErrs = append(savedErrs, f.name+": "+err.Error())
 		} else {
