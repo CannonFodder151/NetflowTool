@@ -474,7 +474,7 @@ func startSNMPPoller(db *DB) {
 			continue
 		}
 		for _, d := range devices {
-			snmpScan(db, d.ID)
+			snmpScan(db, d.ID, nil)
 		}
 		time.Sleep(60 * time.Second)
 	}
@@ -501,7 +501,27 @@ func getDevices(db *DB, enabled bool) ([]SNMPDevice, error) {
 }
 
 // snmpScan polls a single device and stores all interface data
-func snmpScan(db *DB, deviceID int64) error {
+// Returns a debug object describing what happened
+func snmpScanWithResult(db *DB, deviceID int64) map[string]interface{} {
+	debug := map[string]interface{}{
+		"device_id":  deviceID,
+		"started":    time.Now().UTC().Format("2006-01-02 15:04:05"),
+		"status":     "running",
+		"interfaces": 0,
+		"errors":     []string{},
+	}
+	err := snmpScan(db, deviceID, debug)
+	if err != nil {
+		debug["status"] = "error"
+		debug["errors"] = append(debug["errors"].([]string), err.Error())
+	} else {
+		debug["status"] = "success"
+	}
+	debug["finished"] = time.Now().UTC().Format("2006-01-02 15:04:05")
+	return debug
+}
+
+func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	var d SNMPDevice
 	err := db.QueryRow(`SELECT id,name,ip,snmp_version,community,security_level,snmp_username,auth_proto,auth_pass,priv_proto,priv_pass,poll_interval,enabled,last_poll
 		FROM snmp_devices WHERE id=?`, deviceID).
@@ -510,6 +530,19 @@ func snmpScan(db *DB, deviceID int64) error {
 			&d.PollInterval, &d.Enabled, &d.LastPoll)
 	if err != nil {
 		return fmt.Errorf("device %d not found: %v", deviceID, err)
+	}
+
+	if debug != nil {
+		debug["device_name"] = d.Name
+		debug["device_ip"] = d.IP
+		debug["snmp_version"] = d.SNMPVersion
+		if d.SNMPVersion == "v3" {
+			debug["security_level"] = d.SecurityLevel
+			debug["auth_proto"] = d.AuthProto
+			debug["priv_proto"] = d.PrivProto
+		} else {
+			debug["community"] = d.Community
+		}
 	}
 
 	sn := &gosnmp.GoSNMP{
@@ -563,9 +596,15 @@ func snmpScan(db *DB, deviceID int64) error {
 	}
 
 	if err := sn.Connect(); err != nil {
+		if debug != nil {
+			debug["errors"] = append(debug["errors"].([]string), "connect failed: "+err.Error())
+		}
 		return fmt.Errorf("SNMP connect %s: %v", d.IP, err)
 	}
 	defer sn.Conn.Close()
+	if debug != nil {
+		debug["connect"] = "connected to " + d.IP + ":161"
+	}
 
 	// Get device info
 	oids := []string{
@@ -574,7 +613,14 @@ func snmpScan(db *DB, deviceID int64) error {
 	}
 	sysInfo, err := sn.Get(oids)
 	if err != nil {
+		if debug != nil {
+			debug["errors"] = append(debug["errors"].([]string), "sysinfo get failed: "+err.Error())
+		}
 		return fmt.Errorf("SNMP get %s: %v", d.IP, err)
+	}
+	if debug != nil {
+		debug["sysname"] = fmt.Sprintf("%v", sysInfo.Variables[0].Value)
+		debug["sysdescr"] = fmt.Sprintf("%v", sysInfo.Variables[1].Value)
 	}
 	for i, v := range sysInfo.Variables {
 		if v.Value == nil {
@@ -664,7 +710,17 @@ func snmpScan(db *DB, deviceID int64) error {
 			return nil
 		})
 		if err != nil {
+			if debug != nil {
+				debug["errors"] = append(debug["errors"].([]string), "walk "+oid+" failed: "+err.Error())
+			}
 			return fmt.Errorf("SNMP walk %s on %s: %v", oid, d.IP, err)
+		}
+	}
+
+	if debug != nil {
+		debug["interfaces"] = len(ifaces)
+		if len(ifaces) == 0 {
+			debug["errors"] = append(debug["errors"].([]string), "no interfaces discovered")
 		}
 	}
 
@@ -1540,8 +1596,8 @@ func makeRouter(db *DB) http.Handler {
 					jsonErr(w, "invalid device id", http.StatusBadRequest)
 					return
 				}
-				go snmpScan(db, id)
-				jsonResp(w, map[string]string{"ok": "scan started"})
+				result := snmpScanWithResult(db, id)
+				jsonResp(w, result)
 			})(w, r)
 		case r.Method == http.MethodPut:
 			handleUpdateDevice(db)(w, r)

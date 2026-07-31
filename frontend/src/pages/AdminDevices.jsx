@@ -53,10 +53,21 @@ export default function AdminDevices() {
     if (res.ok) get('/api/devices').then(r => r.ok && r.json().then(setDevices))
   }
 
-  const handleScan = async (id) => {
-    const res = await post(`/api/devices/${id}/scan`, {})
-    if (res.ok) {
-      setTimeout(() => get('/api/devices').then(r => r.ok && r.json().then(setDevices)), 3000)
+  const [scanResult, setScanResult] = useState(null)
+  const [scanning, setScanning] = useState(false)
+
+  const handleScan = async (d) => {
+    setScanning(true)
+    setScanResult(null)
+    try {
+      const res = await post(`/api/devices/${d.id}/scan`, {})
+      const data = await res.json()
+      setScanResult({ ...data, device_label: d.name })
+    } catch (e) {
+      setScanResult({ status: 'error', errors: [e.message], device_label: d.name })
+    } finally {
+      setScanning(false)
+      get('/api/devices').then(r => r.ok && r.json().then(setDevices))
     }
   }
 
@@ -117,7 +128,7 @@ export default function AdminDevices() {
                   <td>
                     <div className="flex gap-2">
                       <button className="btn btn-sm btn-outline" onClick={() => openEdit(d)}>Edit</button>
-                      <button className="btn btn-sm btn-outline" onClick={() => handleScan(d.id)} disabled={!d.enabled}>Scan</button>
+                      <button className="btn btn-sm btn-outline" onClick={() => handleScan(d)} disabled={!d.enabled || scanning}>Scan</button>
                       <button className="btn btn-sm btn-outline btn-danger" onClick={() => handleDelete(d.id)}>Delete</button>
                     </div>
                   </td>
@@ -182,6 +193,30 @@ export default function AdminDevices() {
                 <button type="submit" className="btn btn-primary">{editing ? 'Save' : 'Add'}</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {scanResult && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setScanResult(null)}>
+          <div className="bg-white rounded-lg p-6 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <h2 className="text-xl font-semibold mb-4">SNMP Scan Result: {scanResult.device_label}</h2>
+            <div className="mb-4">
+              <span className={`badge ${scanResult.status === 'success' ? 'badge-green' : 'badge-red'} text-sm`}>
+                {scanResult.status}
+              </span>
+              {scanResult.interfaces > 0 && (
+                <span className="badge badge-blue ml-2 text-sm">{scanResult.interfaces} interfaces</span>
+              )}
+            </div>
+            <div className="bg-gray-100 rounded p-4 overflow-auto" style={{maxHeight:'50vh',fontSize:'0.85rem'}}>
+              <pre style={{whiteSpace:'pre-wrap',wordBreak:'break-all'}}>
+{JSON.stringify(scanResult, null, 2)}
+              </pre>
+            </div>
+            <div className="flex justify-end mt-4">
+              <button className="btn btn-primary" onClick={() => setScanResult(null)}>Close</button>
+            </div>
           </div>
         </div>
       )}

@@ -16,9 +16,10 @@ import ErrorBoundary from './components/ErrorBoundary'
 import './index.css'
 
 function PrivateRoute({ children, adminOnly = false }) {
-  const { user, ready } = useAuth()
+  const { user, ready, mustReset } = useAuth()
   if (!ready) return <div className="flex h-screen items-center justify-center"><div className="animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div></div>
   if (!user) return <Navigate to="/login" replace />
+  if (mustReset) return <Navigate to="/reset-password" replace />
   if (adminOnly && !user.is_admin) return <Navigate to="/" replace />
   return <>{children}</>
 }
