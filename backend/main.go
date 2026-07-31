@@ -636,6 +636,12 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 			} else if i == 1 {
 				db.Exec("UPDATE snmp_devices SET name=? WHERE id=? AND (name='' OR name IS NULL)", str, d.ID)
 			}
+		} else if str := toStr(v.Value); str != "" {
+			if i == 0 {
+				db.Exec("UPDATE snmp_devices SET name=? WHERE id=? AND name=''", str, d.ID)
+			} else if i == 1 {
+				db.Exec("UPDATE snmp_devices SET name=? WHERE id=? AND (name='' OR name IS NULL)", str, d.ID)
+			}
 		}
 	}
 
@@ -655,7 +661,7 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 
 	walkOIDs := map[string]func(int, gosnmp.SnmpPDU){
 		"1.3.6.1.2.1.2.2.1.2": func(i int, pdu gosnmp.SnmpPDU) {
-			if s, ok := pdu.Value.(string); ok {
+			if s := toStr(pdu.Value); s != "" {
 				ifaces[i].name = s
 			}
 		},
@@ -759,6 +765,18 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	db.Exec("UPDATE snmp_devices SET last_poll=datetime('now') WHERE id=?", d.ID)
 	log.Printf("SNMP scan %s (%s): %d interfaces collected", d.Name, d.IP, len(ifaces))
 	return nil
+}
+
+func toStr(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	case fmt.Stringer:
+		return t.String()
+	}
+	return ""
 }
 
 func toUint64(v interface{}) (uint64, bool) {
