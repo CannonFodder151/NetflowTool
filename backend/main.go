@@ -189,6 +189,10 @@ func (d *DB) migrate() error {
 			width INTEGER DEFAULT 4, height INTEGER DEFAULT 3,
 			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS meta (
+			key TEXT PRIMARY KEY,
+			value TEXT
+		)`,
 	} {
 		if _, err := tx.Exec(q); err != nil {
 			return err
@@ -562,6 +566,9 @@ func fieldUint(b []byte) uint64 {
 }
 
 func insertFlows(db *DB, flows []FlowRecord) {
+	if db == nil {
+		return
+	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	tx, err := db.Begin()
@@ -770,12 +777,16 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	// Get ifNumber first
 	ifNumRes, err := sn.Get([]string{"1.3.6.1.2.1.2.1.0"})
 	if err != nil {
+		if debug != nil {
+			debug["errors"] = append(debug["errors"].([]string), "ifNumber get failed: "+err.Error())
+		}
 		return fmt.Errorf("SNMP ifNumber on %s: %v", d.IP, err)
 	}
 	ifNumber, _ := toInt(ifNumRes.Variables[0].Value)
 	if ifNumber < 1 || ifNumber > 1024 {
 		ifNumber = 64
 	}
+	log.Printf("[SNMP] %s has %d interfaces", d.IP, ifNumber)
 	if debug != nil {
 		debug["ifnumber"] = ifNumber
 	}
@@ -796,48 +807,50 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		ifaces[i] = &ifData{idx: i}
 	}
 
-	// Per-column batch Get (avoids Walk quirks; reliable on all agents)
-	cols := []struct {
-		oidPrefix string
-		col       int
+	// Per-interface Get: 8 OIDs per request - small, reliable on all agents
+	ifCols := []struct {
+		oid  string
+		col  int
 	}{
-		{"1.3.6.1.2.1.2.2.1.2", 2},   // ifDescr
-		{"1.3.6.1.2.1.2.2.1.5", 5},   // ifSpeed
-		{"1.3.6.1.2.1.2.2.1.7", 7},   // ifAdminStatus
-		{"1.3.6.1.2.1.2.2.1.8", 8},   // ifOperStatus
-		{"1.3.6.1.2.1.2.2.1.10", 10}, // ifInOctets
-		{"1.3.6.1.2.1.2.2.1.16", 16}, // ifOutOctets
-		{"1.3.6.1.2.1.2.2.1.14", 14}, // ifInErrors
-		{"1.3.6.1.2.1.2.2.1.20", 20}, // ifOutErrors
+		{"1.3.6.1.2.1.2.2.1.2", 2},
+		{"1.3.6.1.2.1.2.2.1.5", 5},
+		{"1.3.6.1.2.1.2.2.1.7", 7},
+		{"1.3.6.1.2.1.2.2.1.8", 8},
+		{"1.3.6.1.2.1.2.2.1.10", 10},
+		{"1.3.6.1.2.1.2.2.1.16", 16},
+		{"1.3.6.1.2.1.2.2.1.14", 14},
+		{"1.3.6.1.2.1.2.2.1.20", 20},
 	}
-	for _, c := range cols {
+	colsByName := map[string]int{}
+	for _, c := range ifCols {
+		colsByName[c.oid] = c.col
+	}
+
+	for i := 1; i <= ifNumber; i++ {
 		var oids []string
-		for i := 1; i <= ifNumber; i++ {
-			oids = append(oids, fmt.Sprintf("%s.%d", c.oidPrefix, i))
+		for _, c := range ifCols {
+			oids = append(oids, fmt.Sprintf("%s.%d", c.oid, i))
 		}
 		res, err := sn.Get(oids)
 		if err != nil {
+			log.Printf("[SNMP] if%d get failed: %v", i, err)
 			if debug != nil {
-				debug["errors"] = append(debug["errors"].([]string), "get "+c.oidPrefix+" failed: "+err.Error())
+				debug["errors"] = append(debug["errors"].([]string), fmt.Sprintf("if%d: %v", i, err))
 			}
 			continue
 		}
-		if debug != nil && len(debug["raw_samples"].([]string)) < 12 {
-			for _, v := range res.Variables {
-				debug["raw_samples"] = append(debug["raw_samples"].([]string),
-					fmt.Sprintf("%s = %v (%T)", v.Name, v.Value, v.Value))
-			}
-		}
+		f := ifaces[i]
 		for _, v := range res.Variables {
-			idx := oidIndex(v.Name)
-			if idx < 1 {
-				continue
-			}
-			f, ok := ifaces[idx]
+			col, ok := colsByName[oidWithoutIndex(v.Name)]
 			if !ok {
 				continue
 			}
-			switch c.col {
+			// log raw values for the first interface to diagnose
+			if i == 1 && debug != nil && len(debug["raw_samples"].([]string)) < 12 {
+				debug["raw_samples"] = append(debug["raw_samples"].([]string),
+					fmt.Sprintf("%s = %v (%T)", v.Name, v.Value, v.Value))
+			}
+			switch col {
 			case 2:
 				f.name = toStr(v.Value)
 			case 5:
@@ -861,6 +874,7 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	if debug != nil {
 		debug["interfaces"] = len(ifaces)
 	}
+	log.Printf("[SNMP] scanned %s: %d interfaces collected", d.IP, len(ifaces))
 
 	// Save all interfaces (manual update-or-insert)
 	saved := 0
@@ -899,6 +913,14 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	db.Exec("UPDATE snmp_devices SET last_poll=datetime('now') WHERE id=?", d.ID)
 	log.Printf("SNMP scan %s (%s): %d interfaces collected", d.Name, d.IP, len(ifaces))
 	return nil
+}
+
+func oidWithoutIndex(name string) string {
+	lastDot := strings.LastIndex(name, ".")
+	if lastDot < 0 {
+		return name
+	}
+	return name[:lastDot]
 }
 
 func oidIndex(name string) int {
@@ -1180,14 +1202,16 @@ func parseFLog(msg string) *FLog {
 func parseKV(s string) map[string]string {
 	r := make(map[string]string)
 	for {
-		// find next key=value
-		idx := strings.IndexAny(s, "= ")
-		if idx < 0 || s[idx] != '=' {
+		s = strings.TrimLeft(s, " \t")
+		if s == "" {
 			break
 		}
-		key := strings.TrimSpace(s[:idx])
-		s = s[idx+1:]
-
+		eq := strings.IndexByte(s, '=')
+		if eq <= 0 {
+			break
+		}
+		key := strings.TrimSpace(s[:eq])
+		s = s[eq+1:]
 		if len(key) == 0 {
 			break
 		}
@@ -2003,7 +2027,19 @@ func seedDemoData(db *DB) {
 }
 
 func cleanupBadData(db *DB) {
-	// Remove flow records with no usable IPs (garbage from old fixed-offset parser)
+	// Data version marker - old flow records were written by a broken
+	// fixed-offset parser and are garbage. Wipe once, then keep.
+	var ver string
+	db.QueryRow("SELECT value FROM meta WHERE key='data_version'").Scan(&ver)
+	if ver != "2" {
+		if res, err := db.Exec("DELETE FROM flow_records"); err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				log.Printf("Wiped %d flow records (old parser format)", n)
+			}
+		}
+		db.Exec("INSERT OR REPLACE INTO meta (key,value) VALUES ('data_version','2')")
+	}
+	// Remove flow records with no usable IPs
 	if res, err := db.Exec("DELETE FROM flow_records WHERE src_ip='' OR src_ip='0.0.0.0' OR dst_ip='' OR dst_ip='0.0.0.0'"); err == nil {
 		if n, _ := res.RowsAffected(); n > 0 {
 			log.Printf("Cleaned %d invalid flow records", n)

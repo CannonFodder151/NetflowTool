@@ -1,11 +1,11 @@
 # Dependencies
-backend/go.sum
 frontend/node_modules/
 frontend/package-lock.json
 
 # Build outputs
 frontend/dist/
 backend/netflow-collector
+backend/netflow-collector.exe
 
 # SQLite databases
 *.db
