@@ -53,6 +53,21 @@ export default function AdminDevices() {
     if (res.ok) get('/api/devices').then(r => r.ok && r.json().then(setDevices))
   }
 
+  const openEdit = (d) => {
+    setForm({
+      name: d.name || '', ip: d.ip || '', snmp_version: d.snmp_version || 'v2c',
+      community: d.community || 'public',
+      security_level: d.security_level || 'authNoPriv',
+      snmp_username: d.snmp_username || '',
+      auth_proto: d.auth_proto || 'SHA', auth_pass: d.auth_pass || '',
+      priv_proto: d.priv_proto || 'DES', priv_pass: d.priv_pass || '',
+      poll_interval: d.poll_interval || 60,
+      enabled: !!d.enabled
+    })
+    setEditing(d)
+    setShowModal(true)
+  }
+
   if (loading) return <Tile title="SNMP Devices" span={12}><div className="text-center py-8">Loading...</div></Tile>
 
   const isV3 = form.snmp_version === 'v3'
@@ -94,7 +109,7 @@ export default function AdminDevices() {
                   <td className="text-sm">{d.last_poll ? format(new Date(d.last_poll), 'MMM d, HH:mm') : 'Never'}</td>
                   <td>
                     <div className="flex gap-2">
-                      <button className="btn btn-sm btn-outline" onClick={() => { setForm(d); setEditing(d); setShowModal(true) }}>Edit</button>
+                      <button className="btn btn-sm btn-outline" onClick={() => openEdit(d)}>Edit</button>
                       <button className="btn btn-sm btn-outline btn-danger" onClick={() => handleDelete(d.id)}>Delete</button>
                     </div>
                   </td>

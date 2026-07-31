@@ -66,7 +66,7 @@ type SNMPDevice struct {
 	PrivPass      string     `json:"priv_pass,omitempty"`
 	PollInterval  int        `json:"poll_interval"`
 	Enabled       bool       `json:"enabled"`
-	LastPoll      *time.Time `json:"last_poll"`
+	LastPoll      string `json:"last_poll"`
 }
 
 type IfaceView struct {
@@ -609,13 +609,13 @@ func processSyslog(data []byte, db *DB) {
 		return
 	}
 
-	log := parseFLog(msg)
-	if log != nil {
+	entry := parseFLog(msg)
+	if entry != nil {
 		db.mu.Lock()
 		db.Exec(`INSERT INTO fortigate_logs (ts,device_name,device_ip,log_type,action,message,src_ip,dst_ip,service,risk_level,raw_log)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			log.Timestamp, log.DeviceName, log.DeviceIP, log.LogType, log.Action,
-			log.Message, log.SrcIP, log.DstIP, log.Service, log.RiskLevel, log.RawLog)
+			entry.Timestamp, entry.DeviceName, entry.DeviceIP, entry.LogType, entry.Action,
+			entry.Message, entry.SrcIP, entry.DstIP, entry.Service, entry.RiskLevel, entry.RawLog)
 		db.mu.Unlock()
 	} else {
 		log.Printf("syslog: unparsed message (first 200 chars): %s", msg[:min(200, len(msg))])
@@ -644,6 +644,12 @@ func parseFLog(msg string) *FLog {
 
 	// Parse FortiGate log format: date=... time=... devname=... ... 
 	kv := parseKV(msg)
+	_, hasDate := kv["date"]
+	_, hasDevname := kv["devname"]
+	_, hasType := kv["type"]
+	if !hasDate && !hasDevname && !hasType && !strings.HasPrefix(msg, "CEF:") {
+		return nil // not a FortiGate-style message
+	}
 	if t, ok := kv["date"]; ok {
 		if tm, ok2 := kv["time"]; ok2 {
 			fl.Timestamp = t + " " + tm
@@ -685,9 +691,14 @@ func parseFLog(msg string) *FLog {
 	if strings.HasPrefix(msg, "CEF:") {
 		parts := strings.SplitN(msg, "|", 8)
 		if len(parts) >= 8 {
-			fl.LogType = parts[2]
-			fl.Action = parts[4]
-			fl.Message = parts[5]
+			fl.LogType = parts[5] // Name field (e.g. "Traffic")
+			fl.Message = parts[5] + " " + parts[4]
+			if fl.DeviceName == "" {
+				fl.DeviceName = parts[1] + " " + parts[2]
+			}
+			if fl.Action == "" {
+				fl.Action = parts[4] // event class id
+			}
 
 			ext := parts[7]
 			for _, pair := range strings.Split(ext, " ") {
@@ -706,6 +717,12 @@ func parseFLog(msg string) *FLog {
 					fl.DeviceName = kv2[1]
 				case "act":
 					fl.Action = kv2[1]
+				case "spt":
+					if fl.Service == "" {
+						fl.Service = "port-" + kv2[1]
+					}
+				case "dpt":
+					fl.Service = "port-" + kv2[1]
 				}
 			}
 		}
