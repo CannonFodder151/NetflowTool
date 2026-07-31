@@ -947,6 +947,7 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 }
 
 func oidWithoutIndex(name string) string {
+	name = strings.TrimPrefix(name, ".")
 	lastDot := strings.LastIndex(name, ".")
 	if lastDot < 0 {
 		return name
@@ -955,6 +956,7 @@ func oidWithoutIndex(name string) string {
 }
 
 func oidIndex(name string) int {
+	name = strings.TrimPrefix(name, ".")
 	lastDot := strings.LastIndex(name, ".")
 	if lastDot < 0 {
 		return 0

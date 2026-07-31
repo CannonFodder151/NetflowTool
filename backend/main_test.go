@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+// ─── OID parsing (gosnmp returns names with a leading dot) ──────────────────
+
+func TestOidParsing(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantBase string
+		wantIdx  int
+	}{
+		{".1.3.6.1.2.1.31.1.1.1.1.1", "1.3.6.1.2.1.31.1.1.1.1", 1},
+		{"1.3.6.1.2.1.2.2.1.2.36", "1.3.6.1.2.1.2.2.1.2", 36},
+		{".1.3.6.1.2.1.2.2.1.10.1", "1.3.6.1.2.1.2.2.1.10", 1},
+	}
+	for _, c := range cases {
+		if got := oidWithoutIndex(c.in); got != c.wantBase {
+			t.Errorf("oidWithoutIndex(%q) = %q, want %q", c.in, got, c.wantBase)
+		}
+		if got := oidIndex(c.in); got != c.wantIdx {
+			t.Errorf("oidIndex(%q) = %d, want %d", c.in, got, c.wantIdx)
+		}
+	}
+}
+
 // ─── SNMP value conversion ───────────────────────────────────────────────────
 
 func TestToStr(t *testing.T) {
