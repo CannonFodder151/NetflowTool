@@ -26,7 +26,7 @@ import (
 )
 
 // buildVersion is stamped at build time; increment to force rebuilds and verify deploys
-var buildVersion = "v0.4.1-ifname"
+var buildVersion = "v0.4.2-oidfix"
 
 // ─── MODELS ──────────────────────────────────────────────────────────────────
 
