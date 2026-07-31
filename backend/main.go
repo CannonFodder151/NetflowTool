@@ -25,6 +25,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// buildVersion is stamped at build time; increment to force rebuilds and verify deploys
+var buildVersion = "v0.4.1-ifname"
+
 // ─── MODELS ──────────────────────────────────────────────────────────────────
 
 type User struct {
@@ -894,6 +897,10 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 
 	if debug != nil {
 		debug["interfaces"] = len(ifaces)
+	}
+	// diagnostic: show the resolved name source for interface 1
+	if f, ok := ifaces[1]; ok {
+		log.Printf("[SNMP] if1 name source: ifDescr=%q ifName=%q", f.name, f.name2)
 	}
 	log.Printf("[SNMP] scanned %s: %d interfaces collected", d.IP, len(ifaces))
 
@@ -2089,6 +2096,8 @@ func main() {
 		log.Fatalf("DB: %v", err)
 	}
 	defer db.Close()
+
+	log.Printf("NetFlow Collector %s starting", buildVersion)
 
 	// Start collectors
 	go startNetflow(db, 2055)
