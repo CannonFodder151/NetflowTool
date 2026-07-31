@@ -902,6 +902,12 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	if f, ok := ifaces[1]; ok {
 		log.Printf("[SNMP] if1 name source: ifDescr=%q ifName=%q", f.name, f.name2)
 	}
+	// diagnostic: show parsed values for a few interfaces to verify numeric parsing
+	for _, idx := range []int{1, 19, 27} {
+		if f, ok := ifaces[idx]; ok {
+			log.Printf("[SNMP] parsed if%d: name=%q speed=%d admin=%d oper=%d inOct=%d outOct=%d", idx, f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct)
+		}
+	}
 	log.Printf("[SNMP] scanned %s: %d interfaces collected", d.IP, len(ifaces))
 
 	// Save all interfaces (manual update-or-insert)
