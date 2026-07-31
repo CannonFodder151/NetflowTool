@@ -646,7 +646,19 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		}
 	}
 
-	// Walk ifTable columns using GetNext-based Walk (works reliably on FortiGate)
+	// Get ifNumber first
+	ifNumRes, err := sn.Get([]string{"1.3.6.1.2.1.2.1.0"})
+	if err != nil {
+		return fmt.Errorf("SNMP ifNumber on %s: %v", d.IP, err)
+	}
+	ifNumber, _ := toInt(ifNumRes.Variables[0].Value)
+	if ifNumber < 1 || ifNumber > 1024 {
+		ifNumber = 64
+	}
+	if debug != nil {
+		debug["ifnumber"] = ifNumber
+	}
+
 	type ifData struct {
 		idx    int
 		name   string
@@ -659,84 +671,74 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		outErr uint64
 	}
 	ifaces := make(map[int]*ifData)
-
-	walkOIDs := map[string]func(int, gosnmp.SnmpPDU){
-		"1.3.6.1.2.1.2.2.1.2": func(i int, pdu gosnmp.SnmpPDU) {
-			if s := toStr(pdu.Value); s != "" {
-				ifaces[i].name = s
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.5": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].speed = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.7": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].admin = int(u)
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.8": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].oper = int(u)
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.10": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].inOct = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.16": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].outOct = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.14": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].inErr = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.20": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].outErr = u
-			}
-		},
+	for i := 1; i <= ifNumber; i++ {
+		ifaces[i] = &ifData{idx: i}
 	}
 
-	for oid, handler := range walkOIDs {
-		err := sn.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
-			lastDot := strings.LastIndex(pdu.Name, ".")
-			if lastDot < 0 {
-				return nil
-			}
-			idxStr := pdu.Name[lastDot+1:]
-			idx, err := strconv.Atoi(idxStr)
-			if err != nil || idx < 1 {
-				return nil
-			}
-			if _, ok := ifaces[idx]; !ok {
-				ifaces[idx] = &ifData{idx: idx}
-			}
-			if debug != nil && len(debug["raw_samples"].([]string)) < 12 {
-				debug["raw_samples"] = append(debug["raw_samples"].([]string),
-					fmt.Sprintf("%s = %v (%T)", pdu.Name, pdu.Value, pdu.Value))
-			}
-			handler(idx, pdu)
-			return nil
-		})
+	// Per-column batch Get (avoids Walk quirks; reliable on all agents)
+	cols := []struct {
+		oidPrefix string
+		col       int
+	}{
+		{"1.3.6.1.2.1.2.2.1.2", 2},   // ifDescr
+		{"1.3.6.1.2.1.2.2.1.5", 5},   // ifSpeed
+		{"1.3.6.1.2.1.2.2.1.7", 7},   // ifAdminStatus
+		{"1.3.6.1.2.1.2.2.1.8", 8},   // ifOperStatus
+		{"1.3.6.1.2.1.2.2.1.10", 10}, // ifInOctets
+		{"1.3.6.1.2.1.2.2.1.16", 16}, // ifOutOctets
+		{"1.3.6.1.2.1.2.2.1.14", 14}, // ifInErrors
+		{"1.3.6.1.2.1.2.2.1.20", 20}, // ifOutErrors
+	}
+	for _, c := range cols {
+		var oids []string
+		for i := 1; i <= ifNumber; i++ {
+			oids = append(oids, fmt.Sprintf("%s.%d", c.oidPrefix, i))
+		}
+		res, err := sn.Get(oids)
 		if err != nil {
 			if debug != nil {
-				debug["errors"] = append(debug["errors"].([]string), "walk "+oid+" failed: "+err.Error())
+				debug["errors"] = append(debug["errors"].([]string), "get "+c.oidPrefix+" failed: "+err.Error())
 			}
-			return fmt.Errorf("SNMP walk %s on %s: %v", oid, d.IP, err)
+			continue
+		}
+		if debug != nil && len(debug["raw_samples"].([]string)) < 12 {
+			for _, v := range res.Variables {
+				debug["raw_samples"] = append(debug["raw_samples"].([]string),
+					fmt.Sprintf("%s = %v (%T)", v.Name, v.Value, v.Value))
+			}
+		}
+		for _, v := range res.Variables {
+			idx := oidIndex(v.Name)
+			if idx < 1 {
+				continue
+			}
+			f, ok := ifaces[idx]
+			if !ok {
+				continue
+			}
+			switch c.col {
+			case 2:
+				f.name = toStr(v.Value)
+			case 5:
+				f.speed, _ = toUint64(v.Value)
+			case 7:
+				if u, ok := toUint64(v.Value); ok { f.admin = int(u) }
+			case 8:
+				if u, ok := toUint64(v.Value); ok { f.oper = int(u) }
+			case 10:
+				f.inOct, _ = toUint64(v.Value)
+			case 16:
+				f.outOct, _ = toUint64(v.Value)
+			case 14:
+				f.inErr, _ = toUint64(v.Value)
+			case 20:
+				f.outErr, _ = toUint64(v.Value)
+			}
 		}
 	}
 
 	if debug != nil {
 		debug["interfaces"] = len(ifaces)
-		if len(ifaces) == 0 {
-			debug["errors"] = append(debug["errors"].([]string), "no interfaces discovered")
-		}
 	}
 
 	// Save all interfaces (manual update-or-insert)
@@ -776,6 +778,23 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	db.Exec("UPDATE snmp_devices SET last_poll=datetime('now') WHERE id=?", d.ID)
 	log.Printf("SNMP scan %s (%s): %d interfaces collected", d.Name, d.IP, len(ifaces))
 	return nil
+}
+
+func oidIndex(name string) int {
+	lastDot := strings.LastIndex(name, ".")
+	if lastDot < 0 {
+		return 0
+	}
+	idx, err := strconv.Atoi(name[lastDot+1:])
+	if err != nil || idx < 1 {
+		return 0
+	}
+	return idx
+}
+
+func toInt(v interface{}) (int, bool) {
+	u, ok := toUint64(v)
+	return int(u), ok
 }
 
 func toStr(v interface{}) string {
