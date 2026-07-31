@@ -443,7 +443,8 @@ func parseV9(data []byte, db *DB, deviceIP string) {
 
 	if len(flows) > 0 {
 		insertFlows(db, flows)
-		log.Printf("[NETFLOW] v9 from %s: parsed %d flows (total now inserted this packet)", deviceIP, len(flows))
+		fr := flows[0]
+		log.Printf("[NETFLOW] v9 from %s: parsed %d flows (sample: %s:%d -> %s:%d proto=%d bytes=%d pkts=%d)", deviceIP, len(flows), fr.SrcIP, fr.SrcPort, fr.DstIP, fr.DstPort, fr.Protocol, fr.Bytes, fr.Packets)
 	}
 }
 
@@ -505,6 +506,10 @@ func parseTemplates(fsData []byte, device string, sourceID uint32) {
 		templateCache.Lock()
 		templateCache.m[tplKey(device, sourceID, tplID)] = tpl
 		templateCache.Unlock()
+		log.Printf("[NETFLOW] template %d from %s (srcID %d): %d fields", tplID, device, sourceID, len(tpl.fields))
+		for i, f := range tpl.fields {
+			log.Printf("[NETFLOW]   field %d: type=%d len=%d", i, f.typ, f.len)
+		}
 		fsData = fsData[4+int(fieldCount)*4:]
 	}
 }
