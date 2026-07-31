@@ -11,6 +11,7 @@ import AdminUsers from './pages/AdminUsers'
 import AdminDevices from './pages/AdminDevices'
 import PasswordReset from './pages/PasswordReset'
 import TopSources from './pages/TopSources'
+import Diagnostics from './pages/Diagnostics'
 import Navbar from './components/Navbar'
 import ErrorBoundary from './components/ErrorBoundary'
 import './index.css'
@@ -43,6 +44,7 @@ function AppRoutes() {
         <Route path="/services" element={<ErrorBoundary><Services /></ErrorBoundary>} />
         <Route path="/top-sources" element={<ErrorBoundary><TopSources /></ErrorBoundary>} />
         <Route path="/changelog" element={<ErrorBoundary><ChangeLog /></ErrorBoundary>} />
+        <Route path="/diagnostics" element={<ErrorBoundary><Diagnostics /></ErrorBoundary>} />
         <Route path="/admin/users" element={<PrivateRoute adminOnly><ErrorBoundary><AdminUsers /></ErrorBoundary></PrivateRoute>} />
         <Route path="/admin/devices" element={<PrivateRoute adminOnly><ErrorBoundary><AdminDevices /></ErrorBoundary></PrivateRoute>} />
       </Route>

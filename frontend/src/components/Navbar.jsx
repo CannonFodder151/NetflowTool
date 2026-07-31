@@ -9,6 +9,7 @@ const navItems = [
   { path: '/services', label: 'Services' },
   { path: '/top-sources', label: 'Top Sources' },
   { path: '/changelog', label: 'Change Log' },
+  { path: '/diagnostics', label: 'Diagnostics' },
 ]
 
 const adminItems = [

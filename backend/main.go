@@ -728,19 +728,31 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		}
 	}
 
-	// Upsert all interfaces
+	// Upsert all interfaces (manual update-or-insert, no dependency on unique index)
 	for _, f := range ifaces {
 		if f.name == "" {
 			continue
 		}
 		db.mu.Lock()
-		db.Exec(`INSERT INTO interfaces (device_id,idx,name,speed,admin_status,oper_status,in_octets,out_octets,in_errors,out_errors,last_updated)
-			VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
-			ON CONFLICT(device_id,idx) DO UPDATE SET
-				name=excluded.name, speed=excluded.speed, admin_status=excluded.admin_status,
-				oper_status=excluded.oper_status, in_octets=excluded.in_octets, out_octets=excluded.out_octets,
-				in_errors=excluded.in_errors, out_errors=excluded.out_errors, last_updated=excluded.last_updated`,
-			d.ID, f.idx, f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr)
+		var exists int
+		db.QueryRow("SELECT COUNT(*) FROM interfaces WHERE device_id=? AND idx=?", d.ID, f.idx).Scan(&exists)
+		if exists > 0 {
+			if _, err := db.Exec(`UPDATE interfaces SET name=?, speed=?, admin_status=?, oper_status=?, in_octets=?, out_octets=?, in_errors=?, out_errors=?, last_updated=datetime('now')
+				WHERE device_id=? AND idx=?`,
+				f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr, d.ID, f.idx); err != nil {
+				if debug != nil {
+					debug["errors"] = append(debug["errors"].([]string), "update iface "+f.name+": "+err.Error())
+				}
+			}
+		} else {
+			if _, err := db.Exec(`INSERT INTO interfaces (device_id,idx,name,speed,admin_status,oper_status,in_octets,out_octets,in_errors,out_errors,last_updated)
+				VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
+				d.ID, f.idx, f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr); err != nil {
+				if debug != nil {
+					debug["errors"] = append(debug["errors"].([]string), "insert iface "+f.name+": "+err.Error())
+				}
+			}
+		}
 		db.mu.Unlock()
 	}
 
@@ -1651,6 +1663,19 @@ func makeRouter(db *DB) http.Handler {
 			"flow_records": flows, "interfaces": ifaces,
 			"fortigate_logs": logs, "snmp_devices": devices,
 		})
+	}))
+	mux.HandleFunc("/api/system/clear", adminMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		db.mu.Lock()
+		db.Exec("DELETE FROM flow_records")
+		db.Exec("DELETE FROM interfaces")
+		db.Exec("DELETE FROM fortigate_logs")
+		db.Exec("DELETE FROM dashboard_tiles")
+		db.mu.Unlock()
+		jsonResp(w, map[string]string{"ok": "all data cleared"})
 	}))
 
 	// Static files with SPA fallback
