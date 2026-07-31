@@ -12,6 +12,7 @@ services:
     environment:
       - DB_PATH=/data/netflow.db
       - ADMIN_PASSWORD=admin
+      # - DEMO_DATA=true   # Uncomment to seed demo NetFlow data on first start
     restart: unless-stopped
 
 volumes:

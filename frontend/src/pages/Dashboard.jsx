@@ -6,6 +6,7 @@ import Tile from '../components/Tile'
 export default function Dashboard() {
   const [ok, setOk] = useState(false)
   const [data, setData] = useState({})
+  const [status, setStatus] = useState(null)
   const [err, setErr] = useState('')
 
   useEffect(() => {
@@ -13,6 +14,7 @@ export default function Dashboard() {
       if (r.ok) { r.json().then(setData); setOk(true) }
       else setErr('Failed to load')
     }).catch(e => setErr(e.message))
+    get('/api/system/status').then(r => r.ok && r.json().then(setStatus)).catch(() => {})
   }, [])
 
   return (
@@ -23,6 +25,23 @@ export default function Dashboard() {
       </div>
 
       {err && <div className="login-error mb-4">{err}</div>}
+
+      {status && (
+        <div className="stat-grid">
+          {[
+            { label: 'Flow Records', val: status.flow_records, hint: 'NetFlow UDP 2055' },
+            { label: 'Interfaces', val: status.interfaces, hint: 'SNMP scan' },
+            { label: 'FortiGate Logs', val: status.fortigate_logs, hint: 'Syslog 514' },
+            { label: 'SNMP Devices', val: status.snmp_devices, hint: 'Configured' },
+          ].map(s => (
+            <div key={s.label} className={`stat-card ${s.val > 0 ? '' : ''}`} style={s.val > 0 ? {} : { borderColor: '#fca5a5' }}>
+              <div className="stat-label">{s.label}</div>
+              <div className="stat-value" style={s.val > 0 ? { color: '#16a34a' } : { color: '#dc2626' }}>{s.val}</div>
+              <div className="text-xs text-muted">{s.hint}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Quick stats */}
       <div className="stat-grid">
