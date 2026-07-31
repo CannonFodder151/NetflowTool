@@ -1631,6 +1631,17 @@ func makeRouter(db *DB) http.Handler {
 		}
 	})
 	mux.HandleFunc("/api/dashboard/stats", handleDashboardStats(db))
+	mux.HandleFunc("/api/system/status", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		var flows, ifaces, logs, devices int
+		db.QueryRow("SELECT COUNT(*) FROM flow_records").Scan(&flows)
+		db.QueryRow("SELECT COUNT(*) FROM interfaces").Scan(&ifaces)
+		db.QueryRow("SELECT COUNT(*) FROM fortigate_logs").Scan(&logs)
+		db.QueryRow("SELECT COUNT(*) FROM snmp_devices").Scan(&devices)
+		jsonResp(w, map[string]int{
+			"flow_records": flows, "interfaces": ifaces,
+			"fortigate_logs": logs, "snmp_devices": devices,
+		})
+	}))
 
 	// Static files with SPA fallback
 	fs := http.FileServer(http.Dir("public"))
