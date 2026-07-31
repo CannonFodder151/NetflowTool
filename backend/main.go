@@ -490,11 +490,13 @@ func getDevices(db *DB, enabled bool) ([]SNMPDevice, error) {
 	var devices []SNMPDevice
 	for rows.Next() {
 		d := SNMPDevice{}
+		var lp sql.NullString
 		if err := rows.Scan(&d.ID, &d.Name, &d.IP, &d.SNMPVersion, &d.Community, &d.SecurityLevel,
 			&d.SnmpUsername, &d.AuthProto, &d.AuthPass, &d.PrivProto, &d.PrivPass,
-			&d.PollInterval, &d.Enabled, &d.LastPoll); err != nil {
+			&d.PollInterval, &d.Enabled, &lp); err != nil {
 			continue
 		}
+		d.LastPoll = lp.String
 		devices = append(devices, d)
 	}
 	return devices, nil
@@ -523,11 +525,13 @@ func snmpScanWithResult(db *DB, deviceID int64) map[string]interface{} {
 
 func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	var d SNMPDevice
+	var lp sql.NullString
 	err := db.QueryRow(`SELECT id,name,ip,snmp_version,community,security_level,snmp_username,auth_proto,auth_pass,priv_proto,priv_pass,poll_interval,enabled,last_poll
 		FROM snmp_devices WHERE id=?`, deviceID).
 		Scan(&d.ID, &d.Name, &d.IP, &d.SNMPVersion, &d.Community, &d.SecurityLevel,
 			&d.SnmpUsername, &d.AuthProto, &d.AuthPass, &d.PrivProto, &d.PrivPass,
-			&d.PollInterval, &d.Enabled, &d.LastPoll)
+			&d.PollInterval, &d.Enabled, &lp)
+	d.LastPoll = lp.String
 	if err != nil {
 		return fmt.Errorf("device %d not found: %v", deviceID, err)
 	}
@@ -1269,9 +1273,11 @@ func handleGetDevices(db *DB) http.HandlerFunc {
 		res := make([]SNMPDevice, 0)
 		for rows.Next() {
 			d := SNMPDevice{}
+			var lp sql.NullString
 			rows.Scan(&d.ID, &d.Name, &d.IP, &d.SNMPVersion, &d.Community, &d.SecurityLevel,
 				&d.SnmpUsername, &d.AuthProto, &d.AuthPass, &d.PrivProto, &d.PrivPass,
-				&d.PollInterval, &d.Enabled, &d.LastPoll)
+				&d.PollInterval, &d.Enabled, &lp)
+			d.LastPoll = lp.String
 			res = append(res, d)
 		}
 		jsonResp(w, res)
