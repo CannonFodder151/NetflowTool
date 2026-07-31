@@ -645,7 +645,7 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		}
 	}
 
-	// Walk ifTable - single BulkWalk over the whole ifEntry subtree
+	// Walk ifTable columns using GetNext-based Walk (works reliably on FortiGate)
 	type ifData struct {
 		idx    int
 		name   string
@@ -659,69 +659,72 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	}
 	ifaces := make(map[int]*ifData)
 
-	// column OID suffixes for ifEntry (1.3.6.1.2.1.2.2.1.<col>.<idx>)
-	colName := map[string]int{
-		".2":  2,  // ifDescr
-		".5":  5,  // ifSpeed
-		".7":  7,  // ifAdminStatus
-		".8":  8,  // ifOperStatus
-		".10": 10, // ifInOctets
-		".16": 16, // ifOutOctets
-		".14": 14, // ifInErrors
-		".20": 20, // ifOutErrors
+	walkOIDs := map[string]func(int, gosnmp.SnmpPDU){
+		"1.3.6.1.2.1.2.2.1.2": func(i int, pdu gosnmp.SnmpPDU) {
+			if s := toStr(pdu.Value); s != "" {
+				ifaces[i].name = s
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.5": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].speed = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.7": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].admin = int(u)
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.8": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].oper = int(u)
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.10": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].inOct = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.16": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].outOct = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.14": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].inErr = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.20": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].outErr = u
+			}
+		},
 	}
 
-	err = sn.BulkWalk("1.3.6.1.2.1.2.2.1", func(pdu gosnmp.SnmpPDU) error {
-		// pdu.Name like 1.3.6.1.2.1.2.2.1.10.3 => col=".10", idx="3"
-		rest := strings.TrimPrefix(pdu.Name, "1.3.6.1.2.1.2.2.1")
-		if rest == "" {
+	for oid, handler := range walkOIDs {
+		err := sn.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
+			lastDot := strings.LastIndex(pdu.Name, ".")
+			if lastDot < 0 {
+				return nil
+			}
+			idxStr := pdu.Name[lastDot+1:]
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 1 {
+				return nil
+			}
+			if _, ok := ifaces[idx]; !ok {
+				ifaces[idx] = &ifData{idx: idx}
+			}
+			handler(idx, pdu)
 			return nil
+		})
+		if err != nil {
+			if debug != nil {
+				debug["errors"] = append(debug["errors"].([]string), "walk "+oid+" failed: "+err.Error())
+			}
+			return fmt.Errorf("SNMP walk %s on %s: %v", oid, d.IP, err)
 		}
-		// find split between column and index: last dot
-		lastDot := strings.LastIndex(rest, ".")
-		if lastDot < 1 {
-			return nil
-		}
-		col := rest[:lastDot]
-		idxStr := rest[lastDot+1:]
-		colID, ok := colName[col]
-		if !ok {
-			return nil
-		}
-		idx, err := strconv.Atoi(idxStr)
-		if err != nil || idx < 1 {
-			return nil
-		}
-		f, ok := ifaces[idx]
-		if !ok {
-			f = &ifData{idx: idx}
-			ifaces[idx] = f
-		}
-		switch colID {
-		case 2:
-			f.name = toStr(pdu.Value)
-		case 5:
-			f.speed, _ = toUint64(pdu.Value)
-		case 7:
-			if u, ok := toUint64(pdu.Value); ok { f.admin = int(u) }
-		case 8:
-			if u, ok := toUint64(pdu.Value); ok { f.oper = int(u) }
-		case 10:
-			f.inOct, _ = toUint64(pdu.Value)
-		case 16:
-			f.outOct, _ = toUint64(pdu.Value)
-		case 14:
-			f.inErr, _ = toUint64(pdu.Value)
-		case 20:
-			f.outErr, _ = toUint64(pdu.Value)
-		}
-		return nil
-	})
-	if err != nil {
-		if debug != nil {
-			debug["errors"] = append(debug["errors"].([]string), "ifTable walk failed: "+err.Error())
-		}
-		return fmt.Errorf("SNMP walk ifTable on %s: %v", d.IP, err)
 	}
 
 	if debug != nil {
@@ -1634,6 +1637,53 @@ func makeRouter(db *DB) http.Handler {
 			http.Error(w, "method not allowed", 405)
 		}
 	})
+	mux.HandleFunc("/api/devices/export", adminMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		devices, err := getDevices(db, false)
+		if err != nil {
+			jsonErr(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", `attachment; filename="netflow-config.json"`)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"exported_at": time.Now().UTC().Format(time.RFC3339),
+			"devices":     devices,
+		})
+	}))
+	mux.HandleFunc("/api/devices/import", adminMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		var payload struct {
+			Devices []SNMPDevice `json:"devices"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			jsonErr(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		imported := 0
+		for _, d := range payload.Devices {
+			if d.Name == "" || d.IP == "" {
+				continue
+			}
+			if d.PollInterval == 0 {
+				d.PollInterval = 60
+			}
+			if d.Community == "" {
+				d.Community = "public"
+			}
+			_, err := db.Exec(`INSERT INTO snmp_devices (name,ip,snmp_version,community,security_level,snmp_username,auth_proto,auth_pass,priv_proto,priv_pass,poll_interval,enabled)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				d.Name, d.IP, d.SNMPVersion, d.Community, d.SecurityLevel, d.SnmpUsername,
+				d.AuthProto, d.AuthPass, d.PrivProto, d.PrivPass, d.PollInterval, d.Enabled)
+			if err != nil {
+				continue // duplicate IP or invalid - skip
+			}
+			imported++
+		}
+		jsonResp(w, map[string]int{"imported": imported})
+	}))
 	mux.HandleFunc("/api/devices/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/scan") && r.Method == http.MethodPost:

@@ -71,6 +71,33 @@ export default function AdminDevices() {
     }
   }
 
+  const handleExport = async () => {
+    const res = await get('/api/devices/export')
+    if (!res.ok) return
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'netflow-config.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImport = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const text = await file.text()
+    const res = await post('/api/devices/import', JSON.parse(text))
+    if (res.ok) {
+      const data = await res.json()
+      alert(`Imported ${data.imported} devices`)
+      get('/api/devices').then(r => r.ok && r.json().then(setDevices))
+    } else {
+      alert('Import failed')
+    }
+    e.target.value = ''
+  }
+
   const openEdit = (d) => {
     setForm({
       name: d.name || '', ip: d.ip || '', snmp_version: d.snmp_version || 'v2c',
@@ -97,7 +124,12 @@ export default function AdminDevices() {
           <h1 className="page-title">SNMP Devices</h1>
           <p className="page-subtitle">Configure firewalls and switches for interface polling</p>
         </div>
-        <button className="btn btn-primary" onClick={() => { resetForm(); setShowModal(true) }}>Add Device</button>
+        <div style={{display:'flex',gap:'0.5rem'}}>
+          <button className="btn btn-outline" onClick={handleExport}>Export</button>
+          <button className="btn btn-outline" onClick={() => document.getElementById('import-file').click()}>Import</button>
+          <input id="import-file" type="file" accept=".json" style={{display:'none'}} onChange={handleImport} />
+          <button className="btn btn-primary" onClick={() => { resetForm(); setShowModal(true) }}>Add Device</button>
+        </div>
       </div>
 
       <Tile title="Configured Devices" span={12}>
