@@ -81,6 +81,39 @@ end
    - **v3**: security level (authNoPriv/authPriv/noAuthNoPriv), auth protocol (SHA/MD5), auth pass, privacy protocol (AES/DES), privacy pass
 3. Click **Scan** to poll immediately (results shown in a popup), or wait for the automatic poll (default 60s)
 
+**FortiGate SNMPv3 note**: the v3 user MUST be bound to a community, otherwise it can authenticate but interface tables return empty/zero values:
+```
+config system snmp sysinfo
+    set status enable
+end
+config system snmp user
+    edit "netflow"
+        set status enable
+        set security-level auth-priv
+        set auth-proto sha256
+        set auth-pwd "AuthPassword"
+        set priv-proto aes256
+        set priv-pwd "PrivPassword"
+    next
+end
+config system snmp community
+    edit 3
+        set status enable
+        config snmp-user
+            edit "netflow"
+            next
+        end
+        config hosts
+            edit 1
+                set ip <collector-ip> 255.255.255.255
+            next
+        end
+    next
+end
+```
+
+Interface names use `ifDescr`, falling back to `ifName`, then `if-N`.
+
 ### FortiGate Syslog (Change Log)
 
 Configure FortiGate to send syslog to `<server-ip>:514`:
