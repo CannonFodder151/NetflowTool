@@ -517,9 +517,9 @@ func parseDataFlow(fsData []byte, tpl *nfTemplate, collected time.Time) []FlowRe
 			}
 			val := rec[pos : pos+int(f.len)]
 			switch f.typ {
-			case 1, 152, 230: // IN_BYTES / octetDeltaCount
+			case 1, 230: // IN_BYTES / octetDeltaCount
 				fr.Bytes = fieldUint(val)
-			case 2, 153, 231: // IN_PKTS / packetDeltaCount
+			case 2, 231: // IN_PKTS / packetDeltaCount
 				fr.Packets = uint32(fieldUint(val))
 			case 4, 98: // PROTOCOL
 				if len(val) >= 1 {
