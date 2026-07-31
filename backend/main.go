@@ -50,6 +50,7 @@ type FlowRecord struct {
 	DeviceIP      string
 	FirstSwitched time.Time
 	LastSwitched  time.Time
+	CollectedAt   time.Time
 }
 
 type SNMPDevice struct {
@@ -346,6 +347,22 @@ func safeTimeRange(rng string) string {
 
 // ─── NETFLOW COLLECTOR ───────────────────────────────────────────────────────
 
+type nfTemplate struct {
+	fields []struct {
+		typ uint16
+		len uint16
+	}
+}
+
+var templateCache = struct {
+	sync.Mutex
+	m map[string]*nfTemplate
+}{m: make(map[string]*nfTemplate)}
+
+func tplKey(device string, sourceID uint32, tplID uint16) string {
+	return fmt.Sprintf("%s|%d|%d", device, sourceID, tplID)
+}
+
 func startNetflow(db *DB, port int) {
 	addr := net.UDPAddr{Port: port}
 	conn, err := net.ListenUDP("udp", &addr)
@@ -355,32 +372,38 @@ func startNetflow(db *DB, port int) {
 	defer conn.Close()
 	log.Printf("NetFlow v9/IPFIX listening UDP %d", port)
 
-	buf := make([]byte, 8192)
+	buf := make([]byte, 65535)
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			continue
 		}
-		go handleFlowPacket(buf[:n], db)
+		go handleFlowPacket(buf[:n], db, "")
 	}
 }
 
-func handleFlowPacket(data []byte, db *DB) {
-	if len(data) < 20 {
+func handleFlowPacket(data []byte, db *DB, deviceIP string) {
+	if len(data) < 16 {
 		return
 	}
 	ver := binary.BigEndian.Uint16(data[:2])
 	if ver == 9 {
-		parseV9(data, db)
+		parseV9(data, db, deviceIP)
 	} else if ver == 10 {
-		parseV10(data, db)
+		parseV10(data, db, deviceIP)
 	}
 }
 
-func parseV9(data []byte, db *DB) {
+func parseV9(data []byte, db *DB, deviceIP string) {
+	if len(data) < 20 {
+		return
+	}
 	count := binary.BigEndian.Uint16(data[2:4])
+	unixSecs := binary.BigEndian.Uint32(data[8:12])
+	sourceID := binary.BigEndian.Uint32(data[16:20])
 	payload := data[20:]
 	var flows []FlowRecord
+	collected := time.Unix(int64(unixSecs), 0).UTC()
 
 	for i := 0; i < int(count) && len(payload) >= 4; i++ {
 		fsID := binary.BigEndian.Uint16(payload[:2])
@@ -390,22 +413,14 @@ func parseV9(data []byte, db *DB) {
 		}
 		fsData := payload[4:fsLen]
 
-		if fsID == 0 || fsID == 1 {
-			// Template or option template – skip for demo
-		} else if fsID > 255 {
-			// Data flowset – parse each record (48 bytes typical)
-			recLen := 48
-			for off := 0; off+recLen <= len(fsData); off += recLen {
-				r := fsData[off : off+recLen]
-				flows = append(flows, FlowRecord{
-					SrcIP:   fmt.Sprintf("%d.%d.%d.%d", r[0], r[1], r[2], r[3]),
-					DstIP:   fmt.Sprintf("%d.%d.%d.%d", r[4], r[5], r[6], r[7]),
-					SrcPort: binary.BigEndian.Uint16(r[8:10]),
-					DstPort: binary.BigEndian.Uint16(r[10:12]),
-					Protocol: r[12],
-					Packets: binary.BigEndian.Uint32(r[16:20]),
-					Bytes:   uint64(binary.BigEndian.Uint32(r[20:24])),
-				})
+		switch {
+		case fsID == 0: // Template FlowSet
+			parseTemplates(fsData, deviceIP, sourceID)
+		case fsID == 1: // Options Template - ignore
+		case fsID > 255: // Data FlowSet
+			tpl := getTemplate(deviceIP, sourceID, fsID)
+			if tpl != nil && len(tpl.fields) > 0 {
+				flows = append(flows, parseDataFlow(fsData, tpl, collected)...)
 			}
 		}
 		payload = payload[fsLen:]
@@ -416,10 +431,16 @@ func parseV9(data []byte, db *DB) {
 	}
 }
 
-func parseV10(data []byte, db *DB) {
-	// IPFIX – simplified parser
+func parseV10(data []byte, db *DB, deviceIP string) {
+	// IPFIX header: version(2) length(2) exportTime(4) seq(4) domainID(4)
+	if len(data) < 16 {
+		return
+	}
+	exportTime := binary.BigEndian.Uint32(data[4:8])
+	domainID := binary.BigEndian.Uint32(data[12:16])
 	payload := data[16:]
 	var flows []FlowRecord
+	collected := time.Unix(int64(exportTime), 0).UTC()
 
 	for len(payload) >= 4 {
 		fsID := binary.BigEndian.Uint16(payload[:2])
@@ -428,19 +449,15 @@ func parseV10(data []byte, db *DB) {
 			break
 		}
 		fsData := payload[4:fsLen]
-		if fsID > 255 {
-			recLen := 52
-			for off := 0; off+recLen <= len(fsData); off += recLen {
-				r := fsData[off : off+recLen]
-				flows = append(flows, FlowRecord{
-					SrcIP:   fmt.Sprintf("%d.%d.%d.%d", r[0], r[1], r[2], r[3]),
-					DstIP:   fmt.Sprintf("%d.%d.%d.%d", r[4], r[5], r[6], r[7]),
-					SrcPort: binary.BigEndian.Uint16(r[8:10]),
-					DstPort: binary.BigEndian.Uint16(r[10:12]),
-					Protocol: r[12],
-					Bytes:   binary.BigEndian.Uint64(r[16:24]),
-					Packets: binary.BigEndian.Uint32(r[24:28]),
-				})
+
+		switch {
+		case fsID == 2: // Template FlowSet (IPFIX)
+			parseTemplates(fsData, deviceIP, domainID)
+		case fsID == 3: // Options Template - ignore
+		case fsID > 255: // Data FlowSet
+			tpl := getTemplate(deviceIP, domainID, fsID)
+			if tpl != nil && len(tpl.fields) > 0 {
+				flows = append(flows, parseDataFlow(fsData, tpl, collected)...)
 			}
 		}
 		payload = payload[fsLen:]
@@ -451,14 +468,118 @@ func parseV10(data []byte, db *DB) {
 	}
 }
 
+func parseTemplates(fsData []byte, device string, sourceID uint32) {
+	for len(fsData) >= 4 {
+		tplID := binary.BigEndian.Uint16(fsData[:2])
+		fieldCount := binary.BigEndian.Uint16(fsData[2:4])
+		if tplID < 256 || fieldCount == 0 || len(fsData) < 4+int(fieldCount)*4 {
+			return
+		}
+		tpl := &nfTemplate{}
+		for i := 0; i < int(fieldCount); i++ {
+			off := 4 + i*4
+			typ := binary.BigEndian.Uint16(fsData[off : off+2])
+			ln := binary.BigEndian.Uint16(fsData[off+2 : off+4])
+			tpl.fields = append(tpl.fields, struct {
+				typ uint16
+				len uint16
+			}{typ, ln})
+		}
+		templateCache.Lock()
+		templateCache.m[tplKey(device, sourceID, tplID)] = tpl
+		templateCache.Unlock()
+		fsData = fsData[4+int(fieldCount)*4:]
+	}
+}
+
+func getTemplate(device string, sourceID uint32, tplID uint16) *nfTemplate {
+	templateCache.Lock()
+	defer templateCache.Unlock()
+	return templateCache.m[tplKey(device, sourceID, tplID)]
+}
+
+func parseDataFlow(fsData []byte, tpl *nfTemplate, collected time.Time) []FlowRecord {
+	recLen := 0
+	for _, f := range tpl.fields {
+		recLen += int(f.len)
+	}
+	if recLen == 0 {
+		return nil
+	}
+	var flows []FlowRecord
+	for off := 0; off+recLen <= len(fsData); off += recLen {
+		rec := fsData[off : off+recLen]
+		fr := FlowRecord{CollectedAt: collected, FirstSwitched: collected, LastSwitched: collected}
+		pos := 0
+		for _, f := range tpl.fields {
+			if pos+int(f.len) > recLen {
+				break
+			}
+			val := rec[pos : pos+int(f.len)]
+			switch f.typ {
+			case 1, 152, 230: // IN_BYTES / octetDeltaCount
+				fr.Bytes = fieldUint(val)
+			case 2, 153, 231: // IN_PKTS / packetDeltaCount
+				fr.Packets = uint32(fieldUint(val))
+			case 4, 98: // PROTOCOL
+				if len(val) >= 1 {
+					fr.Protocol = val[0]
+				}
+			case 7, 239: // L4_SRC_PORT
+				fr.SrcPort = uint16(fieldUint(val))
+			case 8, 225: // IPV4_SRC_ADDR
+				if len(val) >= 4 {
+					fr.SrcIP = fmt.Sprintf("%d.%d.%d.%d", val[0], val[1], val[2], val[3])
+				}
+			case 10, 240: // INPUT_SNMP (ingress interface)
+				fr.InputIface = uint32(fieldUint(val))
+			case 11, 241: // L4_DST_PORT
+				fr.DstPort = uint16(fieldUint(val))
+			case 12, 226: // IPV4_DST_ADDR
+				if len(val) >= 4 {
+					fr.DstIP = fmt.Sprintf("%d.%d.%d.%d", val[0], val[1], val[2], val[3])
+				}
+			case 14, 243: // OUTPUT_SNMP (egress interface)
+				fr.OutputIface = uint32(fieldUint(val))
+			case 21, 153: // LAST_SWITCHED
+			case 22, 152: // FIRST_SWITCHED
+			}
+			pos += int(f.len)
+		}
+		if fr.SrcIP != "" || fr.DstIP != "" {
+			flows = append(flows, fr)
+		}
+	}
+	return flows
+}
+
+func fieldUint(b []byte) uint64 {
+	var v uint64
+	for _, x := range b {
+		v = v<<8 | uint64(x)
+	}
+	return v
+}
+
 func insertFlows(db *DB, flows []FlowRecord) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	tx, _ := db.Begin()
+	tx, err := db.Begin()
+	if err != nil {
+		return
+	}
 	defer tx.Rollback()
-	stmt, _ := tx.Prepare("INSERT INTO flow_records (src_ip,dst_ip,src_port,dst_port,protocol,bytes,packets,first_switched) VALUES (?,?,?,?,?,?,?,datetime('now'))")
+	stmt, err := tx.Prepare("INSERT INTO flow_records (src_ip,dst_ip,src_port,dst_port,protocol,bytes,packets,input_iface,output_iface,device_ip,first_switched,last_switched,collected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+	if err != nil {
+		return
+	}
+	defer stmt.Close()
 	for _, f := range flows {
-		stmt.Exec(f.SrcIP, f.DstIP, f.SrcPort, f.DstPort, f.Protocol, f.Bytes, f.Packets)
+		stmt.Exec(f.SrcIP, f.DstIP, f.SrcPort, f.DstPort, f.Protocol, f.Bytes, f.Packets,
+			f.InputIface, f.OutputIface, f.DeviceIP,
+			f.FirstSwitched.UTC().Format("2006-01-02 15:04:05"),
+			f.LastSwitched.UTC().Format("2006-01-02 15:04:05"),
+			f.CollectedAt.UTC().Format("2006-01-02 15:04:05"))
 	}
 	tx.Commit()
 }
@@ -912,20 +1033,26 @@ func parseFLog(msg string) *FLog {
 		}
 	}
 
+	// Locate start of FortiGate data: key=value format starts with date=,
+	// CEF format starts with CEF:
+	start := -1
+	if cef := strings.Index(msg, "CEF:"); cef >= 0 {
+		start = cef
+	} else if d := strings.Index(msg, "date="); d >= 0 {
+		start = d
+	}
+	if start < 0 {
+		return nil // not a FortiGate-style message
+	}
+	msg = msg[start:]
+
 	fl := &FLog{
 		Timestamp: time.Now().UTC().Format("2006-01-02 15:04:05"),
 		RawLog:    msg,
 		RiskLevel: "low",
 	}
 
-	// Parse FortiGate log format: date=... time=... devname=... ... 
 	kv := parseKV(msg)
-	_, hasDate := kv["date"]
-	_, hasDevname := kv["devname"]
-	_, hasType := kv["type"]
-	if !hasDate && !hasDevname && !hasType && !strings.HasPrefix(msg, "CEF:") {
-		return nil // not a FortiGate-style message
-	}
 	if t, ok := kv["date"]; ok {
 		if tm, ok2 := kv["time"]; ok2 {
 			fl.Timestamp = t + " " + tm
@@ -944,38 +1071,60 @@ func parseFLog(msg string) *FLog {
 	}
 	if v, ok := kv["action"]; ok {
 		fl.Action = v
+	} else if v, ok := kv["status"]; ok {
+		fl.Action = v
 	}
 	if v, ok := kv["srcip"]; ok {
+		fl.SrcIP = v
+	} else if v, ok := kv["src"]; ok {
 		fl.SrcIP = v
 	}
 	if v, ok := kv["dstip"]; ok {
 		fl.DstIP = v
+	} else if v, ok := kv["dst"]; ok {
+		fl.DstIP = v
 	}
 	if v, ok := kv["service"]; ok {
 		fl.Service = v
+	} else if v, ok := kv["dstport"]; ok {
+		fl.Service = "port-" + v
 	}
 	if v, ok := kv["msg"]; ok {
 		fl.Message = v
 	}
-	if v, ok := kv["logdesc"]; ok {
-		if fl.Message == "" {
-			fl.Message = v
+	if v, ok := kv["logdesc"]; ok && fl.Message == "" {
+		fl.Message = v
+	}
+	if fl.Message == "" {
+		// build a message from action + service + ips
+		parts := []string{}
+		if fl.Action != "" {
+			parts = append(parts, "action="+fl.Action)
 		}
+		if fl.Service != "" {
+			parts = append(parts, "service="+fl.Service)
+		}
+		if fl.SrcIP != "" {
+			parts = append(parts, fl.SrcIP)
+		}
+		if fl.DstIP != "" {
+			parts = append(parts, "-> "+fl.DstIP)
+		}
+		fl.Message = strings.Join(parts, " ")
 	}
 
 	// CEF format
 	if strings.HasPrefix(msg, "CEF:") {
 		parts := strings.SplitN(msg, "|", 8)
 		if len(parts) >= 8 {
-			fl.LogType = parts[5] // Name field (e.g. "Traffic")
+			fl.LogType = parts[5]
 			fl.Message = parts[5] + " " + parts[4]
 			if fl.DeviceName == "" {
 				fl.DeviceName = parts[1] + " " + parts[2]
 			}
 			if fl.Action == "" {
-				fl.Action = parts[4] // event class id
+				fl.Action = parts[4]
 			}
-
 			ext := parts[7]
 			for _, pair := range strings.Split(ext, " ") {
 				kv2 := strings.SplitN(pair, "=", 2)
@@ -993,15 +1142,16 @@ func parseFLog(msg string) *FLog {
 					fl.DeviceName = kv2[1]
 				case "act":
 					fl.Action = kv2[1]
-				case "spt":
-					if fl.Service == "" {
-						fl.Service = "port-" + kv2[1]
-					}
-				case "dpt":
+				case "spt", "dpt":
 					fl.Service = "port-" + kv2[1]
 				}
 			}
 		}
+	}
+
+	// Require at least one real field to avoid inserting empty rows
+	if fl.DeviceName == "" && fl.Action == "" && fl.SrcIP == "" && fl.DstIP == "" && fl.Message == "" {
+		return nil
 	}
 
 	// Risk classification
@@ -1852,8 +2002,22 @@ func seedDemoData(db *DB) {
 	log.Printf("Seeded %d flow records and %d fortigate logs", 500, 50)
 }
 
-// ─── MAIN ────────────────────────────────────────────────────────────────────
+func cleanupBadData(db *DB) {
+	// Remove flow records with no usable IPs (garbage from old fixed-offset parser)
+	if res, err := db.Exec("DELETE FROM flow_records WHERE src_ip='' OR src_ip='0.0.0.0' OR dst_ip='' OR dst_ip='0.0.0.0'"); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("Cleaned %d invalid flow records", n)
+		}
+	}
+	// Remove log rows with no extracted fields
+	if res, err := db.Exec(`DELETE FROM fortigate_logs WHERE device_name='' AND action='' AND src_ip='' AND dst_ip='' AND message=''`); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("Cleaned %d empty fortigate log rows", n)
+		}
+	}
+}
 
+// ─── MAIN ────────────────────────────────────────────────────────────────────
 func main() {
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
@@ -1877,6 +2041,9 @@ func main() {
 	if os.Getenv("DEMO_DATA") == "true" || os.Getenv("DEMO_DATA") == "1" {
 		seedDemoData(db)
 	}
+
+	// Remove garbage rows from old broken parsers
+	cleanupBadData(db)
 
 	// Start API
 	router := makeRouter(db)
