@@ -53,6 +53,13 @@ export default function AdminDevices() {
     if (res.ok) get('/api/devices').then(r => r.ok && r.json().then(setDevices))
   }
 
+  const handleScan = async (id) => {
+    const res = await post(`/api/devices/${id}/scan`, {})
+    if (res.ok) {
+      setTimeout(() => get('/api/devices').then(r => r.ok && r.json().then(setDevices)), 3000)
+    }
+  }
+
   const openEdit = (d) => {
     setForm({
       name: d.name || '', ip: d.ip || '', snmp_version: d.snmp_version || 'v2c',
@@ -110,6 +117,7 @@ export default function AdminDevices() {
                   <td>
                     <div className="flex gap-2">
                       <button className="btn btn-sm btn-outline" onClick={() => openEdit(d)}>Edit</button>
+                      <button className="btn btn-sm btn-outline" onClick={() => handleScan(d.id)} disabled={!d.enabled}>Scan</button>
                       <button className="btn btn-sm btn-outline btn-danger" onClick={() => handleDelete(d.id)}>Delete</button>
                     </div>
                   </td>

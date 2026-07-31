@@ -200,6 +200,7 @@ func (d *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_flow_dst ON flow_records(dst_ip)`,
 		`CREATE INDEX IF NOT EXISTS idx_log_ts ON fortigate_logs(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_log_risk ON fortigate_logs(risk_level)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_iface_device ON interfaces(device_id,idx)`,
 	} {
 		tx.Exec(idx)
 	}
@@ -466,96 +467,251 @@ func insertFlows(db *DB, flows []FlowRecord) {
 
 func startSNMPPoller(db *DB) {
 	for {
-		rows, err := db.Query("SELECT id,name,ip,snmp_version,community,poll_interval FROM snmp_devices WHERE enabled=1")
+		devices, err := getDevices(db, true)
 		if err != nil {
+			log.Printf("SNMP poller: %v", err)
 			time.Sleep(30 * time.Second)
 			continue
 		}
-		var devices []SNMPDevice
-		for rows.Next() {
-			var d SNMPDevice
-			rows.Scan(&d.ID, &d.Name, &d.IP, &d.SNMPVersion, &d.Community, &d.PollInterval)
-			devices = append(devices, d)
-		}
-		rows.Close()
-
 		for _, d := range devices {
-			pollDevice(db, d)
+			snmpScan(db, d.ID)
 		}
-
 		time.Sleep(60 * time.Second)
 	}
 }
 
-func pollDevice(db *DB, d SNMPDevice) {
+func getDevices(db *DB, enabled bool) ([]SNMPDevice, error) {
+	rows, err := db.Query(`SELECT id,name,ip,snmp_version,community,security_level,snmp_username,auth_proto,auth_pass,priv_proto,priv_pass,poll_interval,enabled,last_poll
+		FROM snmp_devices WHERE enabled=?`, enabled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var devices []SNMPDevice
+	for rows.Next() {
+		d := SNMPDevice{}
+		if err := rows.Scan(&d.ID, &d.Name, &d.IP, &d.SNMPVersion, &d.Community, &d.SecurityLevel,
+			&d.SnmpUsername, &d.AuthProto, &d.AuthPass, &d.PrivProto, &d.PrivPass,
+			&d.PollInterval, &d.Enabled, &d.LastPoll); err != nil {
+			continue
+		}
+		devices = append(devices, d)
+	}
+	return devices, nil
+}
+
+// snmpScan polls a single device and stores all interface data
+func snmpScan(db *DB, deviceID int64) error {
+	var d SNMPDevice
+	err := db.QueryRow(`SELECT id,name,ip,snmp_version,community,security_level,snmp_username,auth_proto,auth_pass,priv_proto,priv_pass,poll_interval,enabled,last_poll
+		FROM snmp_devices WHERE id=?`, deviceID).
+		Scan(&d.ID, &d.Name, &d.IP, &d.SNMPVersion, &d.Community, &d.SecurityLevel,
+			&d.SnmpUsername, &d.AuthProto, &d.AuthPass, &d.PrivProto, &d.PrivPass,
+			&d.PollInterval, &d.Enabled, &d.LastPoll)
+	if err != nil {
+		return fmt.Errorf("device %d not found: %v", deviceID, err)
+	}
+
 	sn := &gosnmp.GoSNMP{
 		Target:    d.IP,
 		Port:      161,
 		Community: d.Community,
 		Version:   gosnmp.Version2c,
-		Timeout:   time.Duration(5) * time.Second,
-		Retries:   1,
+		Timeout:   5 * time.Second,
+		Retries:   2,
 	}
 
 	if d.SNMPVersion == "v3" {
 		sn.Version = gosnmp.Version3
 		sn.SecurityModel = gosnmp.UserSecurityModel
 		sn.MsgFlags = gosnmp.AuthNoPriv
-	}
-
-	if err := sn.Connect(); err != nil {
-		log.Printf("SNMP connect %s: %v", d.IP, err)
-		return
-	}
-	defer sn.Conn.Close()
-
-	oids := []string{
-		"1.3.6.1.2.1.1.1.0",   // sysDescr
-		"1.3.6.1.2.1.1.5.0",   // sysName
-		"1.3.6.1.2.1.2.1.0",   // ifNumber
-	}
-	_, err := sn.Get(oids)
-	if err != nil {
-		return
-	}
-
-	// Walk ifTable
-	iffOIDs := []string{
-		"1.3.6.1.2.1.2.2.1.1",  // ifIndex
-		"1.3.6.1.2.1.2.2.1.2",  // ifDescr
-		"1.3.6.1.2.1.2.2.1.5",  // ifSpeed
-		"1.3.6.1.2.1.2.2.1.7",  // ifAdminStatus
-		"1.3.6.1.2.1.2.2.1.8",  // ifOperStatus
-		"1.3.6.1.2.1.2.2.1.10", // ifInOctets
-		"1.3.6.1.2.1.2.2.1.16", // ifOutOctets
-		"1.3.6.1.2.1.2.2.1.14", // ifInErrors
-		"1.3.6.1.2.1.2.2.1.20", // ifOutErrors
-	}
-
-	for _, oid := range iffOIDs {
-		if err := sn.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
-			if pdu.Value == nil {
-				return nil
+		sn.SecurityParameters = &gosnmp.UsmSecurityParameters{
+			UserName: d.SnmpUsername,
+		}
+		if d.SecurityLevel == "authPriv" || d.SecurityLevel == "authNoPriv" {
+			sn.MsgFlags = gosnmp.AuthNoPriv
+			switch d.AuthProto {
+			case "MD5":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).AuthenticationProtocol = gosnmp.MD5
+			case "SHA224":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).AuthenticationProtocol = gosnmp.SHA224
+			case "SHA256":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).AuthenticationProtocol = gosnmp.SHA256
+			case "SHA384":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).AuthenticationProtocol = gosnmp.SHA384
+			case "SHA512":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).AuthenticationProtocol = gosnmp.SHA512
+			default:
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).AuthenticationProtocol = gosnmp.SHA
 			}
-			idx := pdu.Name[strings.LastIndex(pdu.Name, ".")+1:]
-			name := ""
-			if v, ok := pdu.Value.(string); ok {
-				name = v
+			sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).AuthenticationPassphrase = d.AuthPass
+		}
+		if d.SecurityLevel == "authPriv" {
+			sn.MsgFlags = gosnmp.AuthPriv
+			switch d.PrivProto {
+			case "AES":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).PrivacyProtocol = gosnmp.AES
+			case "AES192":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).PrivacyProtocol = gosnmp.AES192
+			case "AES256":
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).PrivacyProtocol = gosnmp.AES256
+			default:
+				sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).PrivacyProtocol = gosnmp.DES
 			}
-
-			iIdx, _ := strconv.Atoi(idx)
-			if name != "" && iIdx > 0 {
-				db.mu.Lock()
-				db.Exec("INSERT OR IGNORE INTO interfaces (device_id,idx,name,last_updated) VALUES (?,?,?,datetime('now'))", d.ID, iIdx, name)
-				db.mu.Unlock()
-			}
-			return nil
-		}); err != nil {
-			return
+			sn.SecurityParameters.(*gosnmp.UsmSecurityParameters).PrivacyPassphrase = d.PrivPass
 		}
 	}
 
+	if err := sn.Connect(); err != nil {
+		return fmt.Errorf("SNMP connect %s: %v", d.IP, err)
+	}
+	defer sn.Conn.Close()
+
+	// Get device info
+	oids := []string{
+		"1.3.6.1.2.1.1.1.0", // sysDescr
+		"1.3.6.1.2.1.1.5.0", // sysName
+	}
+	sysInfo, err := sn.Get(oids)
+	if err != nil {
+		return fmt.Errorf("SNMP get %s: %v", d.IP, err)
+	}
+	for i, v := range sysInfo.Variables {
+		if v.Value == nil {
+			continue
+		}
+		if str, ok := v.Value.(string); ok && str != "" {
+			if i == 0 {
+				db.Exec("UPDATE snmp_devices SET name=? WHERE id=? AND name=''", str, d.ID)
+			} else if i == 1 {
+				db.Exec("UPDATE snmp_devices SET name=? WHERE id=? AND (name='' OR name IS NULL)", str, d.ID)
+			}
+		}
+	}
+
+	// Walk ifTable using BulkWalk for efficiency
+	type ifData struct {
+		idx    int
+		name   string
+		speed  uint64
+		admin  int
+		oper   int
+		inOct  uint64
+		outOct uint64
+		inErr  uint64
+		outErr uint64
+	}
+	ifaces := make(map[int]*ifData)
+
+	walkOIDs := map[string]func(int, gosnmp.SnmpPDU){
+		"1.3.6.1.2.1.2.2.1.2": func(i int, pdu gosnmp.SnmpPDU) {
+			if s, ok := pdu.Value.(string); ok {
+				ifaces[i].name = s
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.5": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].speed = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.7": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].admin = int(u)
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.8": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].oper = int(u)
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.10": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].inOct = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.16": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].outOct = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.14": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].inErr = u
+			}
+		},
+		"1.3.6.1.2.1.2.2.1.20": func(i int, pdu gosnmp.SnmpPDU) {
+			if u, ok := toUint64(pdu.Value); ok {
+				ifaces[i].outErr = u
+			}
+		},
+	}
+
+	for oid, handler := range walkOIDs {
+		err := sn.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
+			lastDot := strings.LastIndex(pdu.Name, ".")
+			if lastDot < 0 {
+				return nil
+			}
+			idxStr := pdu.Name[lastDot+1:]
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 1 {
+				return nil
+			}
+			if _, ok := ifaces[idx]; !ok {
+				ifaces[idx] = &ifData{idx: idx}
+			}
+			handler(idx, pdu)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("SNMP walk %s on %s: %v", oid, d.IP, err)
+		}
+	}
+
+	// Upsert all interfaces
+	for _, f := range ifaces {
+		if f.name == "" {
+			continue
+		}
+		db.mu.Lock()
+		db.Exec(`INSERT INTO interfaces (device_id,idx,name,speed,admin_status,oper_status,in_octets,out_octets,in_errors,out_errors,last_updated)
+			VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
+			ON CONFLICT(device_id,idx) DO UPDATE SET
+				name=excluded.name, speed=excluded.speed, admin_status=excluded.admin_status,
+				oper_status=excluded.oper_status, in_octets=excluded.in_octets, out_octets=excluded.out_octets,
+				in_errors=excluded.in_errors, out_errors=excluded.out_errors, last_updated=excluded.last_updated`,
+			d.ID, f.idx, f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr)
+		db.mu.Unlock()
+	}
+
 	db.Exec("UPDATE snmp_devices SET last_poll=datetime('now') WHERE id=?", d.ID)
+	log.Printf("SNMP scan %s (%s): %d interfaces collected", d.Name, d.IP, len(ifaces))
+	return nil
+}
+
+func toUint64(v interface{}) (uint64, bool) {
+	switch t := v.(type) {
+	case int:
+		return uint64(t), true
+	case uint:
+		return uint64(t), true
+	case uint32:
+		return uint64(t), true
+	case uint64:
+		return t, true
+	case int32:
+		return uint64(t), true
+	case int64:
+		return uint64(t), true
+	case []byte:
+		if len(t) == 4 {
+			return uint64(binary.BigEndian.Uint32(t)), true
+		}
+		if len(t) == 8 {
+			return binary.BigEndian.Uint64(t), true
+		}
+	}
+	return 0, false
 }
 
 // ─── SYSLOG SERVER ───────────────────────────────────────────────────────────
@@ -1374,10 +1530,22 @@ func makeRouter(db *DB) http.Handler {
 		}
 	})
 	mux.HandleFunc("/api/devices/", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPut:
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/scan") && r.Method == http.MethodPost:
+			authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+				idStr := strings.TrimPrefix(r.URL.Path, "/api/devices/")
+				idStr = strings.TrimSuffix(idStr, "/scan")
+				id, _ := strconv.ParseInt(idStr, 10, 64)
+				if id == 0 {
+					jsonErr(w, "invalid device id", http.StatusBadRequest)
+					return
+				}
+				go snmpScan(db, id)
+				jsonResp(w, map[string]string{"ok": "scan started"})
+			})(w, r)
+		case r.Method == http.MethodPut:
 			handleUpdateDevice(db)(w, r)
-		case http.MethodDelete:
+		case r.Method == http.MethodDelete:
 			handleDeleteDevice(db)(w, r)
 		default:
 			http.Error(w, "method not allowed", 405)
