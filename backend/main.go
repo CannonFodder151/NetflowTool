@@ -377,12 +377,20 @@ func startNetflow(db *DB, port int) {
 	log.Printf("NetFlow v9/IPFIX listening UDP %d", port)
 
 	buf := make([]byte, 65535)
+	var pktCount int
+	lastLog := time.Now()
 	for {
-		n, _, err := conn.ReadFromUDP(buf)
+		n, src, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			continue
 		}
-		go handleFlowPacket(buf[:n], db, "")
+		pktCount++
+		if time.Since(lastLog) > 15*time.Second {
+			lastLog = time.Now()
+			log.Printf("[NETFLOW] %d packets received in last 15s (latest from %s, %d bytes)", pktCount, src.IP, n)
+			pktCount = 0
+		}
+		go handleFlowPacket(buf[:n], db, src.IP.String())
 	}
 }
 
@@ -432,6 +440,7 @@ func parseV9(data []byte, db *DB, deviceIP string) {
 
 	if len(flows) > 0 {
 		insertFlows(db, flows)
+		log.Printf("[NETFLOW] v9 from %s: parsed %d flows (total now inserted this packet)", deviceIP, len(flows))
 	}
 }
 
@@ -469,6 +478,7 @@ func parseV10(data []byte, db *DB, deviceIP string) {
 
 	if len(flows) > 0 {
 		insertFlows(db, flows)
+		log.Printf("[NETFLOW] v10 from %s: parsed %d flows", deviceIP, len(flows))
 	}
 }
 
