@@ -36,8 +36,8 @@ export const AuthProvider = ({ children }) => {
 
   const changePassword = async (oldPass, newPass) => {
     const res = await post('/api/change-password', { old_password: oldPass, new_password: newPass })
-    if (!res.ok) throw new Error('Failed')
-    logout()
+    if (!res.ok) throw new Error('Failed to change password')
+    setMustReset(false)
   }
 
   if (!ready) {

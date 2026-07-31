@@ -15,11 +15,11 @@ import Navbar from './components/Navbar'
 import ErrorBoundary from './components/ErrorBoundary'
 import './index.css'
 
-function PrivateRoute({ children, adminOnly = false }) {
+function PrivateRoute({ children, adminOnly = false, resetAllowed = false }) {
   const { user, ready, mustReset } = useAuth()
   if (!ready) return <div className="flex h-screen items-center justify-center"><div className="animate-spin rounded-full border-4 border-t-blue-600 w-12 h-12"></div></div>
   if (!user) return <Navigate to="/login" replace />
-  if (mustReset) return <Navigate to="/reset-password" replace />
+  if (mustReset && !resetAllowed) return <Navigate to="/reset-password" replace />
   if (adminOnly && !user.is_admin) return <Navigate to="/" replace />
   return <>{children}</>
 }
@@ -35,7 +35,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
-      <Route path="/reset-password" element={<PrivateRoute><PasswordReset /></PrivateRoute>} />
+      <Route path="/reset-password" element={<PrivateRoute resetAllowed><PasswordReset /></PrivateRoute>} />
       <Route element={<PrivateRoute><AppLayout /></PrivateRoute>}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/interfaces" element={<ErrorBoundary><Interfaces /></ErrorBoundary>} />
