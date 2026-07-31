@@ -506,11 +506,12 @@ func getDevices(db *DB, enabled bool) ([]SNMPDevice, error) {
 // Returns a debug object describing what happened
 func snmpScanWithResult(db *DB, deviceID int64) map[string]interface{} {
 	debug := map[string]interface{}{
-		"device_id":  deviceID,
-		"started":    time.Now().UTC().Format("2006-01-02 15:04:05"),
-		"status":     "running",
-		"interfaces": 0,
-		"errors":     []string{},
+		"device_id":   deviceID,
+		"started":     time.Now().UTC().Format("2006-01-02 15:04:05"),
+		"status":      "running",
+		"interfaces":  0,
+		"raw_samples": []string{},
+		"errors":      []string{},
 	}
 	err := snmpScan(db, deviceID, debug)
 	if err != nil {
@@ -715,6 +716,10 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 			}
 			if _, ok := ifaces[idx]; !ok {
 				ifaces[idx] = &ifData{idx: idx}
+			}
+			if debug != nil && len(debug["raw_samples"].([]string)) < 12 {
+				debug["raw_samples"] = append(debug["raw_samples"].([]string),
+					fmt.Sprintf("%s = %v (%T)", pdu.Name, pdu.Value, pdu.Value))
 			}
 			handler(idx, pdu)
 			return nil
