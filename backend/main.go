@@ -849,6 +849,13 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 			}
 			continue
 		}
+		// dump the raw response for interface 1 to diagnose value parsing
+		if i == 1 {
+			log.Printf("[SNMP] if1 raw response (%d vars):", len(res.Variables))
+			for _, v := range res.Variables {
+				log.Printf("  [SNMP]   %s type=%d value=%v (%T)", v.Name, v.Type, v.Value, v.Value)
+			}
+		}
 		f := ifaces[i]
 		for _, v := range res.Variables {
 			col, ok := colsByName[oidWithoutIndex(v.Name)]
