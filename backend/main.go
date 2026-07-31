@@ -1083,11 +1083,21 @@ func handleChangePassword(db *DB) http.HandlerFunc {
 	})
 }
 
-func handleGetMe() http.HandlerFunc {
+func handleGetMe(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		jsonResp(w, map[string]string{
-			"username": r.Header.Get("X-Username"),
-			"is_admin": r.Header.Get("X-Is-Admin"),
+		uid, _ := strconv.ParseInt(r.Header.Get("X-User-ID"), 10, 64)
+		var u User
+		err := db.QueryRow("SELECT id, username, is_admin, must_reset_password FROM users WHERE id=?", uid).
+			Scan(&u.ID, &u.Username, &u.IsAdmin, &u.MustResetPassword)
+		if err != nil {
+			jsonErr(w, "user not found", http.StatusNotFound)
+			return
+		}
+		jsonResp(w, map[string]interface{}{
+			"id":                 u.ID,
+			"username":           u.Username,
+			"is_admin":           u.IsAdmin,
+			"must_reset_password": u.MustResetPassword,
 		})
 	})
 }
@@ -1523,7 +1533,7 @@ func makeRouter(db *DB) http.Handler {
 
 	mux.HandleFunc("/api/login", handleLogin(db))
 	mux.HandleFunc("/api/change-password", handleChangePassword(db))
-	mux.HandleFunc("/api/me", handleGetMe())
+	mux.HandleFunc("/api/me", handleGetMe(db))
 
 	// Users (admin)
 	mux.HandleFunc("/api/users", func(w http.ResponseWriter, r *http.Request) {

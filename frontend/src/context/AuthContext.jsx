@@ -12,7 +12,11 @@ export const AuthProvider = ({ children }) => {
     const token = localStorage.getItem('token')
     if (!token) { setReady(true); return }
     get('/api/me').then(r => {
-      if (r.ok) { r.json().then(d => { setUser({ ...d, isAdmin: d.is_admin }); setReady(true) }) }
+      if (r.ok) { r.json().then(d => {
+        setUser({ ...d, isAdmin: d.is_admin })
+        setMustReset(!!d.must_reset_password)
+        setReady(true)
+      }) }
       else { localStorage.removeItem('token'); setReady(true) }
     }).catch(() => setReady(true))
   }
