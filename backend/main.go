@@ -569,6 +569,11 @@ func parseDataFlow(fsData []byte, tpl *nfTemplate, collected time.Time) []FlowRe
 			pos += int(f.len)
 		}
 		if fr.SrcIP != "" || fr.DstIP != "" {
+			// sanity check: a single flow with >1TB is misparsed garbage
+			if fr.Bytes > 1000000000000 {
+				log.Printf("[NETFLOW] GARBAGE flow (tpl %d): %s:%d -> %s:%d proto=%d bytes=%d pkts=%d", tpl.fields[0].typ, fr.SrcIP, fr.SrcPort, fr.DstIP, fr.DstPort, fr.Protocol, fr.Bytes, fr.Packets)
+				fr.Bytes = 0
+			}
 			flows = append(flows, fr)
 		}
 	}
