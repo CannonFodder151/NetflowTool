@@ -26,23 +26,6 @@ export default function Dashboard() {
 
       {err && <div className="login-error mb-4">{err}</div>}
 
-      {status && (
-        <div className="stat-grid">
-          {[
-            { label: 'Flow Records', val: status.flow_records, hint: 'NetFlow UDP 2055' },
-            { label: 'Interfaces', val: status.interfaces, hint: 'SNMP scan' },
-            { label: 'FortiGate Logs', val: status.fortigate_logs, hint: 'Syslog 514' },
-            { label: 'SNMP Devices', val: status.snmp_devices, hint: 'Configured' },
-          ].map(s => (
-            <div key={s.label} className={`stat-card ${s.val > 0 ? '' : ''}`} style={s.val > 0 ? {} : { borderColor: '#fca5a5' }}>
-              <div className="stat-label">{s.label}</div>
-              <div className="stat-value" style={s.val > 0 ? { color: '#16a34a' } : { color: '#dc2626' }}>{s.val}</div>
-              <div className="text-xs text-muted">{s.hint}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Quick stats */}
       <div className="stat-grid">
         <StatCard label="Today" value={formatBytes(data.traffic_day || 0)} />

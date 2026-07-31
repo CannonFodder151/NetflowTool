@@ -645,7 +645,7 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		}
 	}
 
-	// Walk ifTable using BulkWalk for efficiency
+	// Walk ifTable - single BulkWalk over the whole ifEntry subtree
 	type ifData struct {
 		idx    int
 		name   string
@@ -659,72 +659,69 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	}
 	ifaces := make(map[int]*ifData)
 
-	walkOIDs := map[string]func(int, gosnmp.SnmpPDU){
-		"1.3.6.1.2.1.2.2.1.2": func(i int, pdu gosnmp.SnmpPDU) {
-			if s := toStr(pdu.Value); s != "" {
-				ifaces[i].name = s
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.5": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].speed = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.7": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].admin = int(u)
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.8": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].oper = int(u)
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.10": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].inOct = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.16": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].outOct = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.14": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].inErr = u
-			}
-		},
-		"1.3.6.1.2.1.2.2.1.20": func(i int, pdu gosnmp.SnmpPDU) {
-			if u, ok := toUint64(pdu.Value); ok {
-				ifaces[i].outErr = u
-			}
-		},
+	// column OID suffixes for ifEntry (1.3.6.1.2.1.2.2.1.<col>.<idx>)
+	colName := map[string]int{
+		".2":  2,  // ifDescr
+		".5":  5,  // ifSpeed
+		".7":  7,  // ifAdminStatus
+		".8":  8,  // ifOperStatus
+		".10": 10, // ifInOctets
+		".16": 16, // ifOutOctets
+		".14": 14, // ifInErrors
+		".20": 20, // ifOutErrors
 	}
 
-	for oid, handler := range walkOIDs {
-		err := sn.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
-			lastDot := strings.LastIndex(pdu.Name, ".")
-			if lastDot < 0 {
-				return nil
-			}
-			idxStr := pdu.Name[lastDot+1:]
-			idx, err := strconv.Atoi(idxStr)
-			if err != nil || idx < 1 {
-				return nil
-			}
-			if _, ok := ifaces[idx]; !ok {
-				ifaces[idx] = &ifData{idx: idx}
-			}
-			handler(idx, pdu)
+	err = sn.BulkWalk("1.3.6.1.2.1.2.2.1", func(pdu gosnmp.SnmpPDU) error {
+		// pdu.Name like 1.3.6.1.2.1.2.2.1.10.3 => col=".10", idx="3"
+		rest := strings.TrimPrefix(pdu.Name, "1.3.6.1.2.1.2.2.1")
+		if rest == "" {
 			return nil
-		})
-		if err != nil {
-			if debug != nil {
-				debug["errors"] = append(debug["errors"].([]string), "walk "+oid+" failed: "+err.Error())
-			}
-			return fmt.Errorf("SNMP walk %s on %s: %v", oid, d.IP, err)
 		}
+		// find split between column and index: last dot
+		lastDot := strings.LastIndex(rest, ".")
+		if lastDot < 1 {
+			return nil
+		}
+		col := rest[:lastDot]
+		idxStr := rest[lastDot+1:]
+		colID, ok := colName[col]
+		if !ok {
+			return nil
+		}
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil || idx < 1 {
+			return nil
+		}
+		f, ok := ifaces[idx]
+		if !ok {
+			f = &ifData{idx: idx}
+			ifaces[idx] = f
+		}
+		switch colID {
+		case 2:
+			f.name = toStr(pdu.Value)
+		case 5:
+			f.speed, _ = toUint64(pdu.Value)
+		case 7:
+			if u, ok := toUint64(pdu.Value); ok { f.admin = int(u) }
+		case 8:
+			if u, ok := toUint64(pdu.Value); ok { f.oper = int(u) }
+		case 10:
+			f.inOct, _ = toUint64(pdu.Value)
+		case 16:
+			f.outOct, _ = toUint64(pdu.Value)
+		case 14:
+			f.inErr, _ = toUint64(pdu.Value)
+		case 20:
+			f.outErr, _ = toUint64(pdu.Value)
+		}
+		return nil
+	})
+	if err != nil {
+		if debug != nil {
+			debug["errors"] = append(debug["errors"].([]string), "ifTable walk failed: "+err.Error())
+		}
+		return fmt.Errorf("SNMP walk ifTable on %s: %v", d.IP, err)
 	}
 
 	if debug != nil {
@@ -734,32 +731,38 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		}
 	}
 
-	// Upsert all interfaces (manual update-or-insert, no dependency on unique index)
+	// Save all interfaces (manual update-or-insert)
+	saved := 0
+	savedErrs := []string{}
 	for _, f := range ifaces {
 		if f.name == "" {
-			continue
+			f.name = fmt.Sprintf("if-%d", f.idx)
 		}
 		db.mu.Lock()
 		var exists int
 		db.QueryRow("SELECT COUNT(*) FROM interfaces WHERE device_id=? AND idx=?", d.ID, f.idx).Scan(&exists)
+		var err error
 		if exists > 0 {
-			if _, err := db.Exec(`UPDATE interfaces SET name=?, speed=?, admin_status=?, oper_status=?, in_octets=?, out_octets=?, in_errors=?, out_errors=?, last_updated=datetime('now')
+			_, err = db.Exec(`UPDATE interfaces SET name=?, speed=?, admin_status=?, oper_status=?, in_octets=?, out_octets=?, in_errors=?, out_errors=?, last_updated=datetime('now')
 				WHERE device_id=? AND idx=?`,
-				f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr, d.ID, f.idx); err != nil {
-				if debug != nil {
-					debug["errors"] = append(debug["errors"].([]string), "update iface "+f.name+": "+err.Error())
-				}
-			}
+				f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr, d.ID, f.idx)
 		} else {
-			if _, err := db.Exec(`INSERT INTO interfaces (device_id,idx,name,speed,admin_status,oper_status,in_octets,out_octets,in_errors,out_errors,last_updated)
+			_, err = db.Exec(`INSERT INTO interfaces (device_id,idx,name,speed,admin_status,oper_status,in_octets,out_octets,in_errors,out_errors,last_updated)
 				VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
-				d.ID, f.idx, f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr); err != nil {
-				if debug != nil {
-					debug["errors"] = append(debug["errors"].([]string), "insert iface "+f.name+": "+err.Error())
-				}
-			}
+				d.ID, f.idx, f.name, f.speed, f.admin, f.oper, f.inOct, f.outOct, f.inErr, f.outErr)
+		}
+		if err != nil {
+			savedErrs = append(savedErrs, f.name+": "+err.Error())
+		} else {
+			saved++
 		}
 		db.mu.Unlock()
+	}
+	if debug != nil {
+		debug["saved"] = saved
+		if len(savedErrs) > 0 {
+			debug["errors"] = append(debug["errors"].([]string), savedErrs...)
+		}
 	}
 
 	db.Exec("UPDATE snmp_devices SET last_poll=datetime('now') WHERE id=?", d.ID)
