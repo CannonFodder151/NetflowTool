@@ -804,6 +804,7 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	type ifData struct {
 		idx    int
 		name   string
+		name2  string // ifName fallback
 		speed  uint64
 		admin  int
 		oper   int
@@ -817,19 +818,20 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 		ifaces[i] = &ifData{idx: i}
 	}
 
-	// Per-interface Get: 8 OIDs per request - small, reliable on all agents
+	// Per-interface Get: 9 OIDs per request - small, reliable on all agents
 	ifCols := []struct {
 		oid  string
 		col  int
 	}{
-		{"1.3.6.1.2.1.2.2.1.2", 2},
-		{"1.3.6.1.2.1.2.2.1.5", 5},
-		{"1.3.6.1.2.1.2.2.1.7", 7},
-		{"1.3.6.1.2.1.2.2.1.8", 8},
-		{"1.3.6.1.2.1.2.2.1.10", 10},
-		{"1.3.6.1.2.1.2.2.1.16", 16},
-		{"1.3.6.1.2.1.2.2.1.14", 14},
-		{"1.3.6.1.2.1.2.2.1.20", 20},
+		{"1.3.6.1.2.1.2.2.1.2", 2},   // ifDescr
+		{"1.3.6.1.2.1.31.1.1.1.1", 3}, // ifName
+		{"1.3.6.1.2.1.2.2.1.5", 5},   // ifSpeed
+		{"1.3.6.1.2.1.2.2.1.7", 7},   // ifAdminStatus
+		{"1.3.6.1.2.1.2.2.1.8", 8},   // ifOperStatus
+		{"1.3.6.1.2.1.2.2.1.10", 10}, // ifInOctets
+		{"1.3.6.1.2.1.2.2.1.16", 16}, // ifOutOctets
+		{"1.3.6.1.2.1.2.2.1.14", 14}, // ifInErrors
+		{"1.3.6.1.2.1.2.2.1.20", 20}, // ifOutErrors
 	}
 	colsByName := map[string]int{}
 	for _, c := range ifCols {
@@ -870,6 +872,8 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 			switch col {
 			case 2:
 				f.name = toStr(v.Value)
+			case 3:
+				f.name2 = toStr(v.Value)
 			case 5:
 				f.speed, _ = toUint64(v.Value)
 			case 7:
@@ -897,6 +901,9 @@ func snmpScan(db *DB, deviceID int64, debug map[string]interface{}) error {
 	saved := 0
 	savedErrs := []string{}
 	for _, f := range ifaces {
+		if f.name == "" {
+			f.name = f.name2
+		}
 		if f.name == "" {
 			f.name = fmt.Sprintf("if-%d", f.idx)
 		}
