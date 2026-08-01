@@ -32,7 +32,7 @@ export default function Interfaces() {
               <tr key={i.id}>
                 <td><strong>{i.device_name}</strong><br /><span className="text-xs text-gray">{i.device_ip}</span></td>
                 <td className="font-mono">{i.name}</td>
-                <td>{formatBytes(i.speed)}ps</td>
+                <td>{i.speed === 4294967295 || i.speed === 0 ? 'Auto' : formatBytes(i.speed) + 'ps'}</td>
                 <td><span className={`badge ${i.admin_status===1?'badge-green':'badge-red'}`}>{i.admin_status===1?'Up':'Down'}</span></td>
                 <td><span className={`badge ${i.oper_status===1?'badge-green':'badge-red'}`}>{i.oper_status===1?'Up':'Down'}</span></td>
                 <td>{formatBytes(i.in_octets)}</td>

@@ -352,6 +352,32 @@ func safeTimeRange(rng string) string {
 	return "1h"
 }
 
+// sqliteRange maps a range key to a valid SQLite datetime() modifier.
+// SQLite only accepts word forms ("1 hours", "7 days"); "1h"/"7d" return NULL,
+// silently disabling every time-windowed query.
+func sqliteRange(rng string) string {
+	switch safeTimeRange(rng) {
+	case "2h":
+		return "2 hours"
+	case "6h":
+		return "6 hours"
+	case "12h":
+		return "12 hours"
+	case "24h":
+		return "24 hours"
+	case "7d":
+		return "7 days"
+	case "14d":
+		return "14 days"
+	case "30d":
+		return "30 days"
+	case "90d":
+		return "90 days"
+	default:
+		return "1 hours"
+	}
+}
+
 // ─── NETFLOW COLLECTOR ───────────────────────────────────────────────────────
 
 type nfTemplate struct {
@@ -528,8 +554,17 @@ func parseDataFlow(fsData []byte, tpl *nfTemplate, collected time.Time) []FlowRe
 	if recLen == 0 {
 		return nil
 	}
+	// Some exporters (FortiGate) pad each v9 data record to a 4-byte boundary,
+	// so a flowset length may not be an exact multiple of the declared record
+	// length. Prefer the aligned stride when it divides the flowset cleanly.
+	stride := recLen
+	if recLen%4 != 0 {
+		if aligned := (recLen + 3) &^ 3; len(fsData)%aligned == 0 {
+			stride = aligned
+		}
+	}
 	var flows []FlowRecord
-	for off := 0; off+recLen <= len(fsData); off += recLen {
+	for off := 0; off+recLen <= len(fsData); off += stride {
 		rec := fsData[off : off+recLen]
 		fr := FlowRecord{CollectedAt: collected, FirstSwitched: collected, LastSwitched: collected}
 		pos := 0
@@ -543,23 +578,23 @@ func parseDataFlow(fsData []byte, tpl *nfTemplate, collected time.Time) []FlowRe
 				fr.Bytes = fieldUint(val)
 			case 2, 231: // IN_PKTS / packetDeltaCount
 				fr.Packets = uint32(fieldUint(val))
-			case 4, 98: // PROTOCOL
-				if len(val) >= 1 {
+			case 4, 98: // PROTOCOL (v9 / IPFIX-id) - keep first non-zero
+				if fr.Protocol == 0 && len(val) >= 1 {
 					fr.Protocol = val[0]
 				}
 			case 7, 239: // L4_SRC_PORT
 				fr.SrcPort = uint16(fieldUint(val))
-			case 8, 225: // IPV4_SRC_ADDR
-				if len(val) >= 4 {
-					fr.SrcIP = fmt.Sprintf("%d.%d.%d.%d", val[0], val[1], val[2], val[3])
+			case 8, 225: // IPV4_SRC_ADDR (v9 8 / IPFIX 225) - don't clobber with filler
+				if ip := ipv4Str(val); ip != "" && (fr.SrcIP == "" || fr.SrcIP == "0.0.0.0") {
+					fr.SrcIP = ip
 				}
 			case 10, 240: // INPUT_SNMP (ingress interface)
 				fr.InputIface = uint32(fieldUint(val))
 			case 11, 241: // L4_DST_PORT
 				fr.DstPort = uint16(fieldUint(val))
-			case 12, 226: // IPV4_DST_ADDR
-				if len(val) >= 4 {
-					fr.DstIP = fmt.Sprintf("%d.%d.%d.%d", val[0], val[1], val[2], val[3])
+			case 12, 226: // IPV4_DST_ADDR (v9 12 / IPFIX 226)
+				if ip := ipv4Str(val); ip != "" && (fr.DstIP == "" || fr.DstIP == "0.0.0.0") {
+					fr.DstIP = ip
 				}
 			case 14, 243: // OUTPUT_SNMP (egress interface)
 				fr.OutputIface = uint32(fieldUint(val))
@@ -586,6 +621,13 @@ func fieldUint(b []byte) uint64 {
 		v = v<<8 | uint64(x)
 	}
 	return v
+}
+
+func ipv4Str(b []byte) string {
+	if len(b) < 4 || (b[0]|b[1]|b[2]|b[3]) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", b[0], b[1], b[2], b[3])
 }
 
 func insertFlows(db *DB, flows []FlowRecord) {
@@ -1462,7 +1504,7 @@ func handleGetTopTalkers(db *DB) http.HandlerFunc {
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
 		}
-		q := fmt.Sprintf("SELECT src_ip, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY total DESC LIMIT %d", rng, limit)
+		q := fmt.Sprintf("SELECT src_ip, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY total DESC LIMIT %d", sqliteRange(rng), limit)
 		rows, _ := db.Query(q)
 		defer rows.Close()
 		res := make([]map[string]interface{}, 0)
@@ -1483,7 +1525,7 @@ func handleGetTopServices(db *DB) http.HandlerFunc {
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
 		}
-		q := fmt.Sprintf("SELECT dst_port, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') AND dst_port > 0 GROUP BY dst_port ORDER BY total DESC LIMIT %d", rng, limit)
+		q := fmt.Sprintf("SELECT dst_port, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') AND dst_port > 0 GROUP BY dst_port ORDER BY total DESC LIMIT %d", sqliteRange(rng), limit)
 		rows, _ := db.Query(q)
 		defer rows.Close()
 		res := make([]map[string]interface{}, 0)
@@ -1502,7 +1544,7 @@ func handleGetTrafficSummary(db *DB) http.HandlerFunc {
 		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
 		var cnt uint64
-		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0), COUNT(*) FROM flow_records WHERE collected_at > datetime('now','-%s')", rng)).Scan(&total, &cnt)
+		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0), COUNT(*) FROM flow_records WHERE collected_at > datetime('now','-%s')", sqliteRange(rng))).Scan(&total, &cnt)
 		jsonResp(w, map[string]interface{}{"total_bytes": total, "connections": cnt, "period": rng})
 	})
 }
@@ -1524,7 +1566,7 @@ func handleGetFlowsByIP(db *DB) http.HandlerFunc {
 		ip := strings.TrimPrefix(r.URL.Path, "/api/flows/by-ip/")
 		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
-		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_ip=? OR dst_ip=?) AND collected_at > datetime('now','-%s')", rng), ip, ip).Scan(&total)
+		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_ip=? OR dst_ip=?) AND collected_at > datetime('now','-%s')", sqliteRange(rng)), ip, ip).Scan(&total)
 		jsonResp(w, map[string]interface{}{"ip": ip, "bytes": total})
 	})
 }
@@ -1535,14 +1577,14 @@ func handleGetFlowsByService(db *DB) http.HandlerFunc {
 		port, _ := strconv.Atoi(svc)
 		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
-		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_port=? OR dst_port=?) AND collected_at > datetime('now','-%s')", rng), port, port).Scan(&total)
+		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_port=? OR dst_port=?) AND collected_at > datetime('now','-%s')", sqliteRange(rng)), port, port).Scan(&total)
 		jsonResp(w, map[string]interface{}{"service": svc, "bytes": total})
 	})
 }
 
 func handleGetInterfaces(db *DB) http.HandlerFunc {
 	return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		rows, _ := db.Query(`SELECT i.id,i.device_id,i.idx,i.name,i.descr,i.speed,i.admin_status,i.oper_status,
+		rows, _ := db.Query(`SELECT i.id,i.device_id,i.idx,i.name,COALESCE(i.descr,''),i.speed,i.admin_status,i.oper_status,
 			i.in_octets,i.out_octets,i.in_errors,i.out_errors,i.last_updated,d.name,d.ip 
 			FROM interfaces i JOIN snmp_devices d ON i.device_id=d.id ORDER BY d.name,i.idx`)
 		defer rows.Close()
@@ -1752,7 +1794,7 @@ func handleDashboardStats(db *DB) http.HandlerFunc {
 			COALESCE(SUM(bytes), 0) FROM flow_records`).Scan(&day, &week, &month, &total)
 
 		// Top talkers (1h)
-		r1, _ := db.Query("SELECT src_ip,SUM(bytes) AS b FROM flow_records WHERE collected_at > datetime('now','-1h') GROUP BY src_ip ORDER BY b DESC LIMIT 10")
+		r1, _ := db.Query("SELECT src_ip,SUM(bytes) AS b FROM flow_records WHERE collected_at > datetime('now','-1 hours') GROUP BY src_ip ORDER BY b DESC LIMIT 10")
 		if r1 != nil {
 			for r1.Next() {
 				var ip string; var b uint64
@@ -1763,7 +1805,7 @@ func handleDashboardStats(db *DB) http.HandlerFunc {
 		}
 
 		// Top services (1h)
-		r2, _ := db.Query("SELECT dst_port,SUM(bytes) AS b FROM flow_records WHERE collected_at > datetime('now','-1h') AND dst_port>0 GROUP BY dst_port ORDER BY b DESC LIMIT 10")
+		r2, _ := db.Query("SELECT dst_port,SUM(bytes) AS b FROM flow_records WHERE collected_at > datetime('now','-1 hours') AND dst_port>0 GROUP BY dst_port ORDER BY b DESC LIMIT 10")
 		if r2 != nil {
 			for r2.Next() {
 				var p uint16; var b uint64
@@ -1859,7 +1901,7 @@ func makeRouter(db *DB) http.Handler {
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
 		}
-		q := fmt.Sprintf(`SELECT src_ip, COUNT(*) as hits, SUM(bytes) as total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY hits DESC LIMIT %d`, rng, limit)
+		q := fmt.Sprintf(`SELECT src_ip, COUNT(*) as hits, SUM(bytes) as total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY hits DESC LIMIT %d`, sqliteRange(rng), limit)
 		rows, _ := db.Query(q)
 		defer rows.Close()
 		res := make([]map[string]interface{}, 0)

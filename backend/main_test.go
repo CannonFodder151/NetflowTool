@@ -237,3 +237,82 @@ func TestParseFLogRejectsGarbage(t *testing.T) {
 		t.Error("expected nil for non-FortiGate message")
 	}
 }
+
+// TestParseDataFlowFortiGateDupeFields reproduces the FortiGate v9 layout: the
+// template carries BOTH the v9 IPv4 fields (8/12) and the IPFIX-style fields
+// (225/226) plus duplicate protocol fields (4/98). The real addresses live in
+// 8/12; 225/226 hold filler/zero bytes. The record is padded to a 4-byte
+// boundary (declared 82 bytes, padded 84). The parser must keep 8/12 and the
+// first non-zero protocol, and stride over the padding.
+func TestParseDataFlowFortiGateDupeFields(t *testing.T) {
+	templateCache.Lock()
+	templateCache.m = make(map[string]*nfTemplate)
+	templateCache.Unlock()
+
+	tpl := &nfTemplate{}
+	for _, f := range [][2]uint16{
+		{1, 8}, {23, 8}, {2, 4}, {24, 4}, {22, 4}, {21, 4},
+		{7, 2}, {11, 2}, {10, 2}, {14, 2}, {4, 1}, {98, 1},
+		{5, 1}, {55, 1}, {95, 9}, {66, 4}, {65, 2}, {89, 1},
+		{136, 1}, {48, 1}, {8, 4}, {12, 4}, {225, 4}, {226, 4},
+		{227, 2}, {228, 2},
+	} {
+		tpl.fields = append(tpl.fields, struct {
+			typ uint16
+			len uint16
+		}{f[0], f[1]})
+	}
+	templateCache.Lock()
+	templateCache.m["10.0.3.1|1|263"] = tpl
+	templateCache.Unlock()
+
+	// One padded record (82 declared + 2 pad), real IPs in 8/12, filler in 225/226.
+	rec := make([]byte, 84)
+	binary.BigEndian.PutUint64(rec[0:8], 1004)    // IN_BYTES
+	binary.BigEndian.PutUint64(rec[8:16], 1004)   // OUT_BYTES
+	binary.BigEndian.PutUint32(rec[16:20], 9)     // IN_PKTS
+	binary.BigEndian.PutUint32(rec[20:24], 9)     // OUT_PKTS
+	binary.BigEndian.PutUint32(rec[24:28], 100)   // FIRST_SWITCHED
+	binary.BigEndian.PutUint32(rec[28:32], 200)   // LAST_SWITCHED
+	binary.BigEndian.PutUint16(rec[32:34], 80)    // SRC_PORT
+	binary.BigEndian.PutUint16(rec[34:36], 63957) // DST_PORT
+	binary.BigEndian.PutUint16(rec[36:38], 34)    // INPUT
+	binary.BigEndian.PutUint16(rec[38:40], 27)    // OUTPUT
+	rec[40] = 6                                    // PROTOCOL (TCP)
+	rec[41] = 0                                    // duplicate proto field (98) - filler
+	copy(rec[62:66], []byte{104, 21, 41, 4})       // IPV4_SRC_ADDR (8)
+	copy(rec[66:70], []byte{10, 0, 3, 5})          // IPV4_DST_ADDR (12)
+	// 225/226 at bytes 70-78 hold zeros (filler)
+
+	flows := parseDataFlow(rec, tpl, time.Now())
+	if len(flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(flows))
+	}
+	f := flows[0]
+	if f.SrcIP != "104.21.41.4" || f.DstIP != "10.0.3.5" {
+		t.Errorf("IPs clobbered by 225/226 filler: %s -> %s", f.SrcIP, f.DstIP)
+	}
+	if f.Protocol != 6 {
+		t.Errorf("protocol clobbered by duplicate field: %d", f.Protocol)
+	}
+	if f.SrcPort != 80 || f.DstPort != 63957 {
+		t.Errorf("bad ports: %d -> %d", f.SrcPort, f.DstPort)
+	}
+	if f.Bytes != 1004 {
+		t.Errorf("bad bytes: %d", f.Bytes)
+	}
+}
+
+// TestSQLiteRange verifies the range keys expand to valid SQLite modifiers
+// (SQLite returns NULL for "1h"/"7d", silently disabling queries).
+func TestSQLiteRange(t *testing.T) {
+	for _, k := range []string{"1h", "2h", "6h", "12h", "24h", "7d", "14d", "30d", "90d"} {
+		m := sqliteRange(k)
+		if m == k {
+			t.Errorf("sqliteRange(%q) returned an invalid abbreviation", k)
+		}
+	}
+	if got := sqliteRange("bogus"); got != "1 hours" {
+		t.Errorf("sqliteRange fallback = %q, want 1 hours", got)
+	}
+}
