@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -303,16 +304,43 @@ func TestParseDataFlowFortiGateDupeFields(t *testing.T) {
 	}
 }
 
-// TestSQLiteRange verifies the range keys expand to valid SQLite modifiers
-// (SQLite returns NULL for "1h"/"7d", silently disabling queries).
-func TestSQLiteRange(t *testing.T) {
-	for _, k := range []string{"1h", "2h", "6h", "12h", "24h", "7d", "14d", "30d", "90d"} {
-		m := sqliteRange(k)
-		if m == k {
-			t.Errorf("sqliteRange(%q) returned an invalid abbreviation", k)
+// TestSafeStaticPath verifies the SPA file handler never serves outside public/.
+func TestSafeStaticPath(t *testing.T) {
+	cases := []struct {
+		urlPath string
+		ok      bool
+		want    string
+	}{
+		{"/", true, "public"},
+		{"/assets/index.js", true, filepath.Join("public", "assets", "index.js")},
+		{"/index.html", true, filepath.Join("public", "index.html")},
+		{"/../etc/passwd", false, ""},
+		{"/../../etc/shadow", false, ""},
+		{"/..", false, ""},
+		{"/foo/../../bar", false, ""},
+	}
+	for _, c := range cases {
+		got, ok := safeStaticPath(c.urlPath)
+		if ok != c.ok || (c.ok && got != c.want) {
+			t.Errorf("safeStaticPath(%q) = %q,%v want %q,%v", c.urlPath, got, ok, c.want, c.ok)
 		}
 	}
-	if got := sqliteRange("bogus"); got != "1 hours" {
-		t.Errorf("sqliteRange fallback = %q, want 1 hours", got)
+}
+
+// TestRangeCutoff verifies every range key maps to a recent UTC cutoff. The
+// queries bind this as a parameter instead of interpolating user input into SQL.
+func TestRangeCutoff(t *testing.T) {
+	now := time.Now().UTC()
+	for _, k := range []string{"1h", "2h", "6h", "12h", "24h", "7d", "14d", "30d", "90d"} {
+		c, err := time.Parse("2006-01-02 15:04:05", rangeCutoff(k))
+		if err != nil {
+			t.Fatalf("rangeCutoff(%q) not parseable: %v", k, err)
+		}
+		if c.After(now) || now.Sub(c) > 100*24*time.Hour {
+			t.Errorf("rangeCutoff(%q) out of range: %v", k, c)
+		}
+	}
+	if rangeCutoff("bogus") != rangeCutoff("1h") {
+		t.Error("rangeCutoff fallback differs from 1h")
 	}
 }

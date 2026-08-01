@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -352,30 +353,33 @@ func safeTimeRange(rng string) string {
 	return "1h"
 }
 
-// sqliteRange maps a range key to a valid SQLite datetime() modifier.
-// SQLite only accepts word forms ("1 hours", "7 days"); "1h"/"7d" return NULL,
-// silently disabling every time-windowed query.
-func sqliteRange(rng string) string {
+// rangeCutoff returns the UTC cutoff timestamp for a validated range key, so
+// queries can use a bound parameter instead of interpolating user input into
+// SQL. SQLite's datetime() modifiers are also quirky ("-1h"/"-7d" return NULL),
+// which is why the cutoff is computed in Go.
+func rangeCutoff(rng string) string {
+	var d time.Duration
 	switch safeTimeRange(rng) {
 	case "2h":
-		return "2 hours"
+		d = 2 * time.Hour
 	case "6h":
-		return "6 hours"
+		d = 6 * time.Hour
 	case "12h":
-		return "12 hours"
+		d = 12 * time.Hour
 	case "24h":
-		return "24 hours"
+		d = 24 * time.Hour
 	case "7d":
-		return "7 days"
+		d = 7 * 24 * time.Hour
 	case "14d":
-		return "14 days"
+		d = 14 * 24 * time.Hour
 	case "30d":
-		return "30 days"
+		d = 30 * 24 * time.Hour
 	case "90d":
-		return "90 days"
+		d = 90 * 24 * time.Hour
 	default:
-		return "1 hours"
+		d = time.Hour
 	}
+	return time.Now().UTC().Add(-d).Format("2006-01-02 15:04:05")
 }
 
 // ─── NETFLOW COLLECTOR ───────────────────────────────────────────────────────
@@ -1504,8 +1508,8 @@ func handleGetTopTalkers(db *DB) http.HandlerFunc {
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
 		}
-		q := fmt.Sprintf("SELECT src_ip, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY total DESC LIMIT %d", sqliteRange(rng), limit)
-		rows, _ := db.Query(q)
+		q := "SELECT src_ip, SUM(bytes) AS total FROM flow_records WHERE collected_at > ? GROUP BY src_ip ORDER BY total DESC LIMIT ?"
+		rows, _ := db.Query(q, rangeCutoff(rng), limit)
 		defer rows.Close()
 		res := make([]map[string]interface{}, 0)
 		for rows.Next() {
@@ -1525,8 +1529,8 @@ func handleGetTopServices(db *DB) http.HandlerFunc {
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
 		}
-		q := fmt.Sprintf("SELECT dst_port, SUM(bytes) AS total FROM flow_records WHERE collected_at > datetime('now','-%s') AND dst_port > 0 GROUP BY dst_port ORDER BY total DESC LIMIT %d", sqliteRange(rng), limit)
-		rows, _ := db.Query(q)
+		q := "SELECT dst_port, SUM(bytes) AS total FROM flow_records WHERE collected_at > ? AND dst_port > 0 GROUP BY dst_port ORDER BY total DESC LIMIT ?"
+		rows, _ := db.Query(q, rangeCutoff(rng), limit)
 		defer rows.Close()
 		res := make([]map[string]interface{}, 0)
 		for rows.Next() {
@@ -1544,7 +1548,7 @@ func handleGetTrafficSummary(db *DB) http.HandlerFunc {
 		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
 		var cnt uint64
-		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0), COUNT(*) FROM flow_records WHERE collected_at > datetime('now','-%s')", sqliteRange(rng))).Scan(&total, &cnt)
+		db.QueryRow("SELECT COALESCE(SUM(bytes),0), COUNT(*) FROM flow_records WHERE collected_at > ?", rangeCutoff(rng)).Scan(&total, &cnt)
 		jsonResp(w, map[string]interface{}{"total_bytes": total, "connections": cnt, "period": rng})
 	})
 }
@@ -1566,7 +1570,7 @@ func handleGetFlowsByIP(db *DB) http.HandlerFunc {
 		ip := strings.TrimPrefix(r.URL.Path, "/api/flows/by-ip/")
 		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
-		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_ip=? OR dst_ip=?) AND collected_at > datetime('now','-%s')", sqliteRange(rng)), ip, ip).Scan(&total)
+		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_ip=? OR dst_ip=?) AND collected_at > ?", ip, ip, rangeCutoff(rng)).Scan(&total)
 		jsonResp(w, map[string]interface{}{"ip": ip, "bytes": total})
 	})
 }
@@ -1577,7 +1581,7 @@ func handleGetFlowsByService(db *DB) http.HandlerFunc {
 		port, _ := strconv.Atoi(svc)
 		rng := safeTimeRange(r.URL.Query().Get("range"))
 		var total uint64
-		db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_port=? OR dst_port=?) AND collected_at > datetime('now','-%s')", sqliteRange(rng)), port, port).Scan(&total)
+		db.QueryRow("SELECT COALESCE(SUM(bytes),0) FROM flow_records WHERE (src_port=? OR dst_port=?) AND collected_at > ?", port, port, rangeCutoff(rng)).Scan(&total)
 		jsonResp(w, map[string]interface{}{"service": svc, "bytes": total})
 	})
 }
@@ -1856,6 +1860,16 @@ func handleDashboardStats(db *DB) http.HandlerFunc {
 
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
 
+// safeStaticPath cleans a URL path against the public/ directory and returns
+// the on-disk path, or ("", false) if the path would escape public/.
+func safeStaticPath(urlPath string) (string, bool) {
+	p := filepath.Clean(filepath.Join("public", urlPath))
+	if p == "public" || strings.HasPrefix(p, "public"+string(filepath.Separator)) {
+		return p, true
+	}
+	return "", false
+}
+
 func makeRouter(db *DB) http.Handler {
 	mux := http.NewServeMux()
 
@@ -1901,8 +1915,8 @@ func makeRouter(db *DB) http.Handler {
 		if l, _ := strconv.Atoi(r.URL.Query().Get("limit")); l > 0 {
 			limit = l
 		}
-		q := fmt.Sprintf(`SELECT src_ip, COUNT(*) as hits, SUM(bytes) as total FROM flow_records WHERE collected_at > datetime('now','-%s') GROUP BY src_ip ORDER BY hits DESC LIMIT %d`, sqliteRange(rng), limit)
-		rows, _ := db.Query(q)
+		q := `SELECT src_ip, COUNT(*) as hits, SUM(bytes) as total FROM flow_records WHERE collected_at > ? GROUP BY src_ip ORDER BY hits DESC LIMIT ?`
+		rows, _ := db.Query(q, rangeCutoff(rng), limit)
 		defer rows.Close()
 		res := make([]map[string]interface{}, 0)
 		for rows.Next() {
@@ -2042,20 +2056,24 @@ func makeRouter(db *DB) http.Handler {
 	}))
 
 	// Static files with SPA fallback
-	fs := http.FileServer(http.Dir("public"))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// API routes handled above, everything else SPA
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)
 			return
 		}
-		// Try serving the file, fallback to index.html
-		path := "public" + r.URL.Path
-		if _, err := os.Stat(path); err == nil {
-			fs.ServeHTTP(w, r)
-		} else {
-			http.ServeFile(w, r, "public/index.html")
+		// Serve files only from under public/; never let the URL escape it.
+		p, ok := safeStaticPath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
 		}
+		// Serve the file if it exists, otherwise fall back to index.html.
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			http.ServeFile(w, r, p)
+			return
+		}
+		http.ServeFile(w, r, "public/index.html")
 	})
 
 	return mux

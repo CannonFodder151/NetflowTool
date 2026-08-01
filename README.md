@@ -232,5 +232,7 @@ sudo docker logs netflow-collector
 
 - **No NetFlow data**: check the `[NETFLOW]` log lines - if none, the exporter isn't reaching UDP 2055.
 - **No interfaces**: scan the device and check the `[SNMP]` log lines + scan popup `raw_samples`.
+- **IPs / Services / Top Sources blank**: time-windowed queries previously returned nothing because SQLite ignores the `datetime('now','-1h')`/`'-7d'` modifiers (returns NULL). Current builds compute the cutoff in Go and bind it as a query parameter. Flows collected before this fix carry `0.0.0.0`/bogus IPs and inflated byte counts - purge them via **Diagnostics → Clear All Data**.
+- **Interfaces all zeros (speed/status/octets)**: a NULL `ifDescr` (FortiGate reports it empty) used to abort the interfaces query before those columns were read. Fixed via `COALESCE`. Virtual-interface speed `4294967295` (0xFFFFFFFF) now shows as **Auto**.
 - **Empty log fields**: check raw syslog in the logs; ensure FortiGate `format default` or `cef`.
 - **Diagnostics page** shows live counts for flows, interfaces, logs, and devices.
