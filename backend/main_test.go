@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/binary"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -304,26 +307,51 @@ func TestParseDataFlowFortiGateDupeFields(t *testing.T) {
 	}
 }
 
-// TestSafeStaticPath verifies the SPA file handler never serves outside public/.
-func TestSafeStaticPath(t *testing.T) {
-	cases := []struct {
-		urlPath string
-		ok      bool
-		want    string
-	}{
-		{"/", true, "public"},
-		{"/assets/index.js", true, filepath.Join("public", "assets", "index.js")},
-		{"/index.html", true, filepath.Join("public", "index.html")},
-		{"/../etc/passwd", false, ""},
-		{"/../../etc/shadow", false, ""},
-		{"/..", false, ""},
-		{"/foo/../../bar", false, ""},
+// TestStaticServing verifies the SPA file handler serves real files, falls
+// back to index.html for unknown routes, and never leaks files outside public/.
+func TestStaticServing(t *testing.T) {
+	dir := t.TempDir()
+	pub := filepath.Join(dir, "public")
+	if err := os.MkdirAll(pub, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		got, ok := safeStaticPath(c.urlPath)
-		if ok != c.ok || (c.ok && got != c.want) {
-			t.Errorf("safeStaticPath(%q) = %q,%v want %q,%v", c.urlPath, got, ok, c.want, c.ok)
+	if err := os.WriteFile(filepath.Join(pub, "index.html"), []byte("SPA-INDEX"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pub, "app.js"), []byte("APP-JS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+
+	// The static handler never touches the DB; an empty DB is enough for routing.
+	r := makeRouter(&DB{})
+
+	for _, c := range []struct{ url, body string }{
+		{"/", "SPA-INDEX"},
+		{"/app.js", "APP-JS"},
+		{"/missing/route", "SPA-INDEX"},
+	} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, httptest.NewRequest("GET", c.url, nil))
+		if rr.Code != 200 || rr.Body.String() != c.body {
+			t.Errorf("GET %s: %d %q, want 200 %q", c.url, rr.Code, rr.Body.String(), c.body)
 		}
+	}
+
+	// Path traversal must never leak a file from outside public/.
+	// (Status may differ per-OS: Linux 404→index fallback, Windows 307 redirect;
+	// neither exposes file contents.)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/../../etc/passwd", nil))
+	if strings.Contains(rr.Body.String(), "root:") {
+		t.Errorf("path traversal leaked file contents: %q", rr.Body.String())
+	}
+	if rr.Body.String() == "APP-JS" {
+		t.Error("path traversal served a public asset unexpectedly")
 	}
 }
 

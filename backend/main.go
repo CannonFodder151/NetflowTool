@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -14,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1860,14 +1860,29 @@ func handleDashboardStats(db *DB) http.HandlerFunc {
 
 // ─── ROUTER ──────────────────────────────────────────────────────────────────
 
-// safeStaticPath cleans a URL path against the public/ directory and returns
-// the on-disk path, or ("", false) if the path would escape public/.
-func safeStaticPath(urlPath string) (string, bool) {
-	p := filepath.Clean(filepath.Join("public", urlPath))
-	if p == "public" || strings.HasPrefix(p, "public"+string(filepath.Separator)) {
-		return p, true
+// spaWriter captures the status code written by http.FileServer so the SPA
+// handler can fall back to index.html on 404. 404 bodies are buffered and
+// discarded rather than written through.
+type spaWriter struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+}
+
+func (s *spaWriter) WriteHeader(code int) {
+	if s.status == http.StatusOK {
+		s.status = code
 	}
-	return "", false
+	if code != http.StatusNotFound {
+		s.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (s *spaWriter) Write(b []byte) (int, error) {
+	if s.status == http.StatusNotFound {
+		return s.body.Write(b)
+	}
+	return s.ResponseWriter.Write(b)
 }
 
 func makeRouter(db *DB) http.Handler {
@@ -2055,25 +2070,21 @@ func makeRouter(db *DB) http.Handler {
 		jsonResp(w, map[string]string{"ok": "all data cleared"})
 	}))
 
-	// Static files with SPA fallback
+	// Static files with SPA fallback. http.FileServer(http.Dir("public")) is
+	// traversal-safe by construction (it cleans the URL path and refuses "..").
+	// A status-capturing writer supplies the SPA fallback to index.html on 404.
+	fileHandler := http.FileServer(http.Dir("public"))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// API routes handled above, everything else SPA
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)
 			return
 		}
-		// Serve files only from under public/; never let the URL escape it.
-		p, ok := safeStaticPath(r.URL.Path)
-		if !ok {
-			http.NotFound(w, r)
-			return
+		rec := &spaWriter{ResponseWriter: w, status: http.StatusOK}
+		fileHandler.ServeHTTP(rec, r)
+		if rec.status == http.StatusNotFound {
+			http.ServeFile(w, r, "public/index.html")
 		}
-		// Serve the file if it exists, otherwise fall back to index.html.
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-			http.ServeFile(w, r, p)
-			return
-		}
-		http.ServeFile(w, r, "public/index.html")
 	})
 
 	return mux
